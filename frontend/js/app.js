@@ -19,7 +19,7 @@ LF.inicio = () => ({ cajero: '#/pos', empleado: '#/stock', repartidor: '#/entreg
 LF.menu = () => {
   const rol = LF.user ? LF.user.rol : 'publico', n = LF.carrito.reduce((s, l) => s + l.cantidad, 0);
   LF.$('#menu').innerHTML = MENUS[rol].map(([h, t]) => `<a href="${h}" class="${location.hash === h || (h === '#/' && !location.hash) ? 'on' : ''}">${t}${h === '#/carrito' && n ? ` (${n})` : ''}</a>`).join('');
-  LF.$('#sesion').innerHTML = LF.user ? `<span>${LF.esc(LF.user.nombre)} · <b>${LF.esc(LF.rolNombre(LF.user.rol))}</b></span><button class="btn sm sec" data-act="salir">Salir</button>` : `<a href="#/login" class="btn sm">Ingresar</a><a href="#/registro" style="color:#cbbfe0">Registrarse</a>`;
+  LF.$('#sesion').innerHTML = LF.user ? `<span>${LF.esc(LF.user.nombre)} · <b>${LF.esc(LF.rolNombre(LF.user.rol))}</b></span><button class="btn sm sec" data-act="salir">Salir</button>` : `<a href="#/login" class="btn sm">Ingresar</a><a href="#/registro" style="color:#bfdbfe">Registrarse</a>`;
 };
 LF.acc.salir = async () => { try { await LF.post('/auth/logout'); } catch (e) {} LF.setToken(null); LF.user = null; LF.menu(); location.hash = '#/'; LF.render(); };
 LF.sesionVencida = () => { LF.toast('Su sesión venció. Ingrese nuevamente.', 'bad'); LF.menu(); location.hash = '#/login'; };
@@ -32,10 +32,14 @@ LF.render = async (silencioso) => {
   const vista = LF.rutas[ruta] || LF.rutas['/'];
   const app = LF.$('#app'); const y = window.scrollY;
   if (!silencioso) app.innerHTML = '<p class="sub">Cargando…</p>';
-  try { app.innerHTML = await vista(); if (silencioso) window.scrollTo(0, y); }
+  try { app.innerHTML = await vista(); if (silencioso) window.scrollTo(0, y); if (ruta === '/login' || ruta === '/registro') LF.montarGoogle(); }
   catch (e) { app.innerHTML = `<div class="card note bad"><b>${LF.esc(e.mensaje || 'Error')}</b><br>${e.codigo === 'SIN_CONEXION' ? 'Inicie el backend con <code>python run.py</code> y recargue la página.' : ''}</div>`; }
 };
-window.addEventListener('hashchange', () => { LF.cerrar(); LF.render(); });
+// Menú hamburguesa (móvil)
+LF.menuAbierto = abrir => { document.body.classList.toggle('menu-open', abrir); const b = LF.$('#hamb'); if (b) b.setAttribute('aria-expanded', abrir ? 'true' : 'false'); };
+LF.acc.menu = () => LF.menuAbierto(!document.body.classList.contains('menu-open'));
+LF.$('#menu').addEventListener('click', ev => { if (ev.target.closest('a')) LF.menuAbierto(false); });
+window.addEventListener('hashchange', () => { LF.menuAbierto(false); LF.cerrar(); LF.render(); });
 document.addEventListener('input', ev => { const el = ev.target.closest('[data-input]'); if (el && LF.inp[el.dataset.input]) LF.inp[el.dataset.input](el); });
 document.addEventListener('change', ev => { const el = ev.target; if (el.matches && el.matches('select[data-act]') || el.matches('input[type=checkbox][data-act]')) { const fn = LF.acc[el.dataset.act]; fn && Promise.resolve(fn(el)).catch(LF.err); } });
 

@@ -2,7 +2,7 @@
 from ...db import one, all_, run
 
 PUBLICOS = 'id,nombre,apellido,ci,fecha_nacimiento,edad,usuario,rol,cargo,telefono,activo,created_at'
-EDITABLES = ('nombre', 'apellido', 'ci', 'fecha_nacimiento', 'edad', 'usuario', 'password', 'rol', 'cargo', 'telefono', 'activo')
+EDITABLES = ('nombre', 'apellido', 'ci', 'fecha_nacimiento', 'edad', 'usuario', 'password', 'rol', 'cargo', 'telefono', 'acepta_terminos', 'activo')
 
 
 class UsuarioRepository:
@@ -16,6 +16,14 @@ class UsuarioRepository:
     @staticmethod
     def duplicado(cur, usuario, ci, excluir=0):
         return one(cur, 'SELECT id FROM usuarios WHERE (usuario=%s OR ci=%s) AND id<>%s LIMIT 1', (usuario, ci, excluir))
+
+    @staticmethod
+    def por_usuario(cur, usuario):
+        return one(cur, 'SELECT * FROM usuarios WHERE usuario=%s', (usuario,))
+
+    @staticmethod
+    def ci_en_uso(cur, ci, excluir):
+        return one(cur, 'SELECT id FROM usuarios WHERE ci=%s AND id<>%s LIMIT 1', (ci, excluir))
 
     @staticmethod
     def insertar(cur, d):

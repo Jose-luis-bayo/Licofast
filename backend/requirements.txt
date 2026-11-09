@@ -3,3 +3,5 @@ flask-cors==6.0.1
 mysql-connector-python==9.4.0
 PyJWT==2.10.1
 certifi
+google-auth>=2.30
+requests>=2.31

@@ -32,6 +32,7 @@ class Config:
     DB_PASSWORD = env('DB_PASSWORD', '')
     DB_NAME = env('DB_NAME', 'licofast')
     DB_POOL = int(env('DB_POOL', '10'))
+    GOOGLE_CLIENT_ID = env('GOOGLE_CLIENT_ID', '')   # ID de cliente OAuth de Google (vacío = botón de Google oculto)
     DB_SSL = env('DB_SSL', '0') == '1'   # 1 en la nube (TiDB Cloud, Aiven...): conexión cifrada obligatoria
     JWT_SECRET = env('JWT_SECRET', 'dev-secret-licofast-cambiar-en-produccion')
     JWT_HORAS = int(env('JWT_HORAS', '8'))

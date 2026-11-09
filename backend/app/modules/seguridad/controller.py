@@ -32,6 +32,17 @@ def login():
     return jsonify(AuthService.login(d.get('usuario'), d.get('password')))
 
 
+@bp.post('/auth/google')
+def login_google():
+    _limite_login()
+    return jsonify(AuthService.login_google((request.get_json(silent=True) or {}).get('credential')))
+
+
+@bp.get('/config/publica')
+def config_publica():
+    return jsonify({'google_client_id': Config.GOOGLE_CLIENT_ID})
+
+
 @bp.post('/auth/register')
 def register():
     _limite_login()

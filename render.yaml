@@ -19,6 +19,8 @@ services:
         value: "4000"
       - key: CORS_ORIGINS
         value: "*"
+      - key: GOOGLE_CLIENT_ID
+        sync: false
       - key: DB_HOST
         sync: false
       - key: DB_USER

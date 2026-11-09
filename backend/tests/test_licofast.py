@@ -343,3 +343,33 @@ def test_errores_con_formato_uniforme(c):
     r = c.get('/api/v1/no-existe')
     assert r.status_code == 404 and set(r.get_json()['error']) == {'codigo', 'mensaje', 'detalle', 'traza'}
     assert c.get('/api/v1/health').get_json()['ok'] is True
+
+
+# ------------------------------------------------------------------ Google
+def test_google_login_crea_cliente_y_exige_completar_perfil(c, monkeypatch):
+    from app.config import Config
+    from google.oauth2 import id_token
+    monkeypatch.setattr(Config, 'GOOGLE_CLIENT_ID', 'cliente-de-prueba')
+    monkeypatch.setattr(id_token, 'verify_oauth2_token', lambda cred, req, aud: {'sub': '1234567890', 'email': 'a@b.com', 'email_verified': True, 'given_name': 'Ana', 'family_name': 'Pérez'} if cred == 'ok' else (_ for _ in ()).throw(ValueError('malo')))
+    assert c.post('/api/v1/auth/google', json={'credential': 'falso'}).status_code == 401
+    d = c.post('/api/v1/auth/google', json={'credential': 'ok'}).get_json()
+    assert d['usuario']['rol'] == 'cliente' and d['usuario']['perfil_incompleto'] is True
+    h = {'Authorization': 'Bearer ' + d['token']}
+    # sin fecha de nacimiento no puede comprar alcohol
+    r = c.post('/api/v1/pedidos', json={'items': [{'producto_id': 1, 'cantidad': 1}], 'direccion': 'Calle 1', 'telefono': '70000000'}, headers=h)
+    assert r.status_code == 422 and r.get_json()['error']['codigo'] == 'EDAD_NO_VERIFICADA'
+    # menor de edad rechazado; mayor completa el perfil
+    r = c.put('/api/v1/auth/me', json={'fecha_nacimiento': '2015-01-01', 'ci': '999111', 'terminos': True}, headers=h)
+    assert r.status_code == 422 and r.get_json()['error']['codigo'] == 'MENOR_DE_EDAD'
+    r = c.put('/api/v1/auth/me', json={'fecha_nacimiento': '1990-05-05', 'ci': '999111', 'terminos': True}, headers=h)
+    assert r.status_code == 200 and r.get_json()['perfil_incompleto'] is False
+    # el segundo ingreso reutiliza la misma cuenta
+    d2 = c.post('/api/v1/auth/google', json={'credential': 'ok'}).get_json()
+    assert d2['usuario']['id'] == d['usuario']['id']
+    # la fecha de nacimiento ya no puede cambiarse
+    c.put('/api/v1/auth/me', json={'fecha_nacimiento': '2000-01-01', 'ci': '999111', 'terminos': True}, headers=h)
+    assert sql('SELECT fecha_nacimiento FROM usuarios WHERE id=%s', (d['usuario']['id'],))[0]['fecha_nacimiento'].year == 1990
+
+
+def test_google_sin_configurar_responde_503(c):
+    assert c.post('/api/v1/auth/google', json={'credential': 'x'}).status_code == 503

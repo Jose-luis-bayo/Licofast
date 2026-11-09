@@ -1,5 +1,6 @@
 """Capa 3: reglas del módulo Seguridad (AuthService, UsuarioService, AuditoriaService)."""
 import json
+import secrets
 import mysql.connector
 from ...config import Config
 from ...db import read, transaction
@@ -19,6 +20,8 @@ def _limpio(u):
     u = dict(u)
     for k in ('password', 'intentos_fallidos', 'bloqueado_hasta', 'acepta_terminos'):
         u.pop(k, None)
+    # Cuentas creadas con Google: faltan fecha de nacimiento y CI reales para vender alcohol
+    u['perfil_incompleto'] = bool(u.get('rol') == 'cliente' and not u.get('fecha_nacimiento'))
     return u
 
 
@@ -56,6 +59,37 @@ class AuthService:
             bus.publish('LoginFallido', usuario_id=uid, entidad='usuario', entidad_id=uid, detalle={'bloqueada': bloqueada})
             raise no_autenticado(MENSAJE_LOGIN)
         bus.publish('LoginExitoso', usuario_id=u['id'], entidad='usuario', entidad_id=u['id'], detalle=None)
+        return {'token': crear_token(u['id'], u['rol']), 'usuario': _limpio(u)}
+
+    @staticmethod
+    def login_google(credential):
+        """Inicio de sesión con Google: valida el ID token firmado por Google y crea la cuenta cliente si es la primera vez."""
+        if not Config.GOOGLE_CLIENT_ID:
+            raise AppError('GOOGLE_NO_CONFIGURADO', 'El inicio de sesión con Google no está configurado', 503)
+        try:
+            from google.oauth2 import id_token
+            from google.auth.transport import requests as greq
+            info = id_token.verify_oauth2_token(credential or '', greq.Request(), Config.GOOGLE_CLIENT_ID)
+        except Exception:
+            raise no_autenticado('No se pudo validar la cuenta de Google')
+        if not info.get('email_verified', True) or not info.get('sub'):
+            raise no_autenticado('La cuenta de Google no tiene el correo verificado')
+        sub = str(info['sub'])
+        usuario = 'g_' + sub
+        nuevo = False
+        with transaction() as cur:
+            u = U.por_usuario(cur, usuario)
+            if not u:
+                nombre = (info.get('given_name') or info.get('name') or 'Cliente')[:80]
+                apellido = (info.get('family_name') or 'Google')[:80]
+                uid = U.insertar(cur, dict(nombre=nombre, apellido=apellido, ci='G-' + sub[:20], fecha_nacimiento=None, edad=18, usuario=usuario,
+                                           password=hash_password(secrets.token_urlsafe(24)), rol='cliente', cargo='Cliente (Google)', telefono=None, acepta_terminos=0, activo=1))
+                u = U.por_id(cur, uid)
+                nuevo = True
+        if not u['activo']:
+            raise no_autenticado(MENSAJE_LOGIN)
+        bus.publish('UsuarioCreado' if nuevo else 'LoginExitoso', usuario_id=u['id'], entidad='usuario', entidad_id=u['id'],
+                    detalle={'rol': 'cliente', 'google': True} if nuevo else {'google': True})
         return {'token': crear_token(u['id'], u['rol']), 'usuario': _limpio(u)}
 
     @staticmethod
@@ -102,6 +136,18 @@ class AuthService:
         nueva = _password(d, 'password_nueva', obligatorio=False)
         with transaction() as cur:
             u = U.por_id(cur, uid, lock=True)
+            if u['rol'] == 'cliente' and not u.get('fecha_nacimiento') and d.get('fecha_nacimiento'):
+                # Completar datos de una cuenta de Google: la fecha de nacimiento solo se puede fijar una vez
+                nac = v.fecha(d.get('fecha_nacimiento'), 'fecha_nacimiento')
+                edad = v.edad_exacta(nac)
+                if edad < 18:
+                    raise invalido('Solo pueden comprar personas de 18 años o más', codigo='MENOR_DE_EDAD')
+                ci = v.texto(d, 'ci', max_len=30)
+                if U.ci_en_uso(cur, ci, uid):
+                    raise conflicto('USUARIO_DUPLICADO', 'Ese CI ya está registrado')
+                if not d.get('terminos'):
+                    raise invalido('Debe aceptar los términos y condiciones', {'campo': 'terminos'})
+                campos.update(fecha_nacimiento=nac, edad=edad, ci=ci, acepta_terminos=1)
             if nueva:
                 if not verify_password(d.get('password_actual') or '', u['password']):
                     raise invalido('La contraseña actual no es correcta', codigo='PASSWORD_ACTUAL_INCORRECTA')

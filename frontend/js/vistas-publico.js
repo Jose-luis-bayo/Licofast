@@ -8,6 +8,7 @@ LF.filtro = { q: '', cat: '' };
 LF.rutas['/login'] = async () => `<div class="card auth"><h1>Iniciar sesión</h1><p class="sub">Ingrese con su usuario y contraseña.</p>
   <form id="fl">${LF.campo('usuario', 'Usuario', 'text', '', 'autocomplete="username" required')}${LF.campo('password', 'Contraseña', 'password', '', 'autocomplete="current-password" required')}
   <p><button class="btn lg" data-act="login">Ingresar</button></p></form>
+  <div class="o-sep"><span>o</span></div><div id="gbtn" class="gbtn"></div>
   <p class="sub">¿No tiene cuenta? <a href="#/registro">Regístrese</a></p>
   <div class="demo"><b>Usuarios de demostración</b> (haga clic para autocompletar, clave: <code>Admin1234</code>):<br>
     <div class="chips" style="margin-top:8px">
@@ -18,6 +19,24 @@ LF.rutas['/login'] = async () => `<div class="card auth"><h1>Iniciar sesión</h1
       <span class="chip" data-act="autoLogin" data-u="cliente1" title="Cliente">🛒 cliente1 (Cliente)</span>
     </div>
   </div></div>`;
+// ---------------- Inicio de sesión con Google ----------------
+LF.montarGoogle = async () => {
+  const caja = LF.$('#gbtn'); if (!caja) return;
+  const ocultar = () => { caja.parentElement.querySelectorAll('.o-sep,#gbtn').forEach(e => e.remove()); };
+  try {
+    const cfg = await LF.get('/config/publica');
+    if (!cfg.google_client_id) return ocultar();
+    if (!window.google) await new Promise((ok, err) => { const s = document.createElement('script'); s.src = 'https://accounts.google.com/gsi/client'; s.async = true; s.onload = ok; s.onerror = err; document.head.appendChild(s); });
+    google.accounts.id.initialize({ client_id: cfg.google_client_id, callback: r => LF.acc.googleCred(r.credential).catch(LF.err) });
+    google.accounts.id.renderButton(caja, { theme: 'outline', size: 'large', shape: 'pill', text: 'continue_with', locale: 'es', width: Math.min(340, caja.clientWidth || 340) });
+  } catch (e) { ocultar(); }
+};
+LF.acc.googleCred = async credential => {
+  const d = await LF.post('/auth/google', { credential }); LF.setToken(d.token); LF.user = d.usuario;
+  LF.toast('Bienvenido, ' + d.usuario.nombre, 'ok');
+  if (d.usuario.perfil_incompleto) { LF.toast('Complete su fecha de nacimiento y CI para poder comprar', 'ok'); location.hash = '#/perfil'; } else location.hash = LF.inicio();
+  LF.menu(); LF.render();
+};
 LF.acc.autoLogin = el => {
   const u = LF.$('#fl input[name=usuario]');
   const p = LF.$('#fl input[name=password]');
@@ -40,7 +59,7 @@ LF.rutas['/registro'] = async () => `<div class="card auth"><h1>Crear cuenta</h1
   <div>${LF.campo('telefono', 'Teléfono')}</div><div>${LF.campo('usuario', 'Usuario', 'text', '', 'required')}</div></div>
   ${LF.campo('password', 'Contraseña (mínimo 8 caracteres)', 'password', '', 'required minlength="8"')}
   <label><input type="checkbox" name="terminos" style="width:auto"> Acepto los términos y declaro ser mayor de 18 años</label>
-  <p><button class="btn lg" data-act="registrar">Crear cuenta</button></p></form><p class="sub">¿Ya tiene cuenta? <a href="#/login">Inicie sesión</a></p></div>`;
+  <p><button class="btn lg" data-act="registrar">Crear cuenta</button></p></form><div class="o-sep"><span>o</span></div><div id="gbtn" class="gbtn"></div><p class="sub">¿Ya tiene cuenta? <a href="#/login">Inicie sesión</a></p></div>`;
 LF.acc.registrar = async () => { await LF.post('/auth/register', LF.form('#fr')); LF.toast('Cuenta creada. Ya puede iniciar sesión.', 'ok'); location.hash = '#/login'; };
 
 // ---------------- Catálogo ----------------
@@ -74,17 +93,21 @@ LF.rutas['/'] = async () => {
       ${banners.map((_, i) => `<button class="banner-dot ${i === slideActivo ? 'active' : ''}" data-act="bannerIr" data-idx="${i}"></button>`).join('')}
     </div>
   </div>
-  <div class="hero" style="padding:18px 24px">
-    <h1>Su licorería, a un clic 🍾</h1>
-    <p>Bebidas nacionales e importadas para mayores de 18 años. Pague por QR o en efectivo contra entrega.</p>
-  </div>
-  <div class="row" style="margin-bottom:12px">
-    <input data-input="buscar" placeholder="Buscar por producto, marca o tipo…" value="${LF.esc(LF.filtro.q)}" style="max-width:380px">
-  </div>
-  <div class="chips">
-    <span class="chip ${!LF.filtro.cat ? 'on' : ''}" data-act="cat" data-id="">Todos</span>
-    ${cats.filter(c => c.activo).map(c => `<span class="chip ${String(LF.filtro.cat) === String(c.id) ? 'on' : ''}" data-act="cat" data-id="${c.id}">${LF.ico(c.nombre)} ${LF.esc(c.nombre)}</span>`).join('')}
-  </div>
+  ${LF.user && LF.user.perfil_incompleto ? '<div class="note"><b>Falta un paso:</b> complete su CI y fecha de nacimiento en <a href="#/perfil">Mi perfil</a> para poder comprar.</div>' : ''}
+  <section class="sec"><div class="sec-t"><h2>Nuestras categorías</h2></div>
+    <div class="cats">
+      <div class="cat-tile ${!LF.filtro.cat ? 'on' : ''}" data-act="cat" data-id=""><span class="ci">🛍️</span><span>Todos</span></div>
+      ${cats.filter(c => c.activo).map(c => `<div class="cat-tile ${String(LF.filtro.cat) === String(c.id) ? 'on' : ''}" data-act="cat" data-id="${c.id}"><span class="ci">${LF.ico(c.nombre)}</span><span>${LF.esc(c.nombre)}</span></div>`).join('')}
+    </div></section>
+  <section class="sec servicios">
+    <div class="srv"><span class="si">🛵</span><div><b>Delivery a domicilio</b><p>Pedidos en línea con seguimiento de tu entrega.</p></div></div>
+    <div class="srv"><span class="si">📲</span><div><b>Paga con QR o efectivo</b><p>QR bancario o contra entrega, tú eliges.</p></div></div>
+    <div class="srv"><span class="si">🔞</span><div><b>Compra responsable</b><p>Venta solo a mayores de 18 años. Beber con moderación.</p></div></div>
+  </section>
+  ${prods.some(p => p.promocion) ? `<section class="sec ofertas"><div class="of-txt"><h2>¿Buscas precios realmente especiales?</h2><p>Aprovecha nuestras promociones vigentes.</p></div>
+    <div class="of-list">${prods.filter(p => p.promocion).slice(0, 4).map(p => `<div class="of-item" data-act="verProd" data-id="${p.id}"><span class="ribbon">${LF.esc(p.promocion)}</span><b>${LF.esc(p.nombre)}</b><span>${LF.bs(p.precio_final)} <s>${LF.bs(p.precio)}</s></span></div>`).join('')}</div></section>` : ''}
+  <section class="sec"><div class="sec-t"><h2>${LF.filtro.q || LF.filtro.cat ? 'Resultados' : 'Recomendados del mes'}</h2>
+    <input data-input="buscar" placeholder="🔎 ¿Qué estás buscando?" value="${LF.esc(LF.filtro.q)}" class="buscar"></div></section>
   <div class="grid g2">${prods.map(p => `
     <div class="card prod">
       ${p.promocion ? `<span class="ribbon">${LF.esc(p.promocion)}</span>` : ''}
@@ -194,9 +217,13 @@ LF.acc.pagarQr = async el => { const pago = await LF.post('/pagos', { venta_id: 
 // ---------------- Perfil ----------------
 LF.rutas['/perfil'] = async () => {
   const u = await LF.get('/auth/me'); LF.user = { ...LF.user, ...u };
-  return LF.pagina('Mi perfil', `${LF.esc(u.usuario)} · rol ${LF.esc(u.rol === 'empleado' ? 'bodega' : u.rol)}`, `<div class="card" style="max-width:520px"><form id="fp">
+  const falta = u.perfil_incompleto ? `<div class="note"><b>Complete sus datos para poder comprar.</b> Por ley solo vendemos alcohol a mayores de 18 años: ingrese su CI y su fecha de nacimiento (no podrá cambiarlos después).</div>
+    <div class="f2"><div>${LF.campo('ci', 'CI', 'text', '', 'required')}</div><div>${LF.campo('fecha_nacimiento', 'Fecha de nacimiento', 'date', '', 'required')}</div></div>
+    <label><input type="checkbox" name="terminos" style="width:auto"> Acepto los términos y declaro ser mayor de 18 años</label><hr style="border:0;border-top:1px solid var(--line);margin:14px 0">` : '';
+  const nombreUsuario = u.usuario.startsWith('g_') ? 'Cuenta de Google' : u.usuario;
+  return LF.pagina('Mi perfil', `${LF.esc(nombreUsuario)} · rol ${LF.esc(u.rol === 'empleado' ? 'bodega' : u.rol)}`, `<div class="card" style="max-width:520px"><form id="fp">${falta}
     <div class="f2"><div>${LF.campo('nombre', 'Nombre', 'text', u.nombre)}</div><div>${LF.campo('apellido', 'Apellido', 'text', u.apellido)}</div></div>${LF.campo('telefono', 'Teléfono', 'tel', u.telefono || '')}
-    <h3 style="margin-top:18px">Cambiar contraseña</h3>${LF.campo('password_actual', 'Contraseña actual', 'password')}${LF.campo('password_nueva', 'Nueva contraseña (mín. 8)', 'password')}
+    ${u.usuario.startsWith('g_') ? '' : `<h3 style="margin-top:18px">Cambiar contraseña</h3>${LF.campo('password_actual', 'Contraseña actual', 'password')}${LF.campo('password_nueva', 'Nueva contraseña (mín. 8)', 'password')}`}
     <p><button class="btn" data-act="guardarPerfil">Guardar cambios</button></p></form></div>`);
 };
-LF.acc.guardarPerfil = async () => { const u = await LF.put('/auth/me', LF.form('#fp')); LF.user = { ...LF.user, ...u }; LF.toast('Perfil actualizado', 'ok'); LF.menu(); };
+LF.acc.guardarPerfil = async () => { const u = await LF.put('/auth/me', LF.form('#fp')); LF.user = { ...LF.user, ...u }; LF.toast('Perfil actualizado', 'ok'); LF.menu(); if (!u.perfil_incompleto) LF.render(); };
