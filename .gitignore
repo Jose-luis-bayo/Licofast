@@ -1,0 +1,7 @@
+backend/.env
+backend/.venv/
+backend/respaldos/
+backend/logs/
+__pycache__/
+*.pyc
+.pytest_cache/
