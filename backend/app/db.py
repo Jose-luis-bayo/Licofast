@@ -6,13 +6,20 @@ from .config import Config
 _pool = None
 
 
+def ssl_args():
+    """Argumentos TLS para bases en la nube (DB_SSL=1). En XAMPP local no se usa."""
+    if not Config.DB_SSL:
+        return {}
+    return {'ssl_disabled': False, 'ssl_ca': Config.DB_SSL_CA, 'ssl_verify_cert': True}
+
+
 def pool():
     global _pool
     if _pool is None:
         _pool = pooling.MySQLConnectionPool(
             pool_name='licofast', pool_size=Config.DB_POOL, pool_reset_session=True,
             host=Config.DB_HOST, port=Config.DB_PORT, user=Config.DB_USER, password=Config.DB_PASSWORD,
-            database=Config.DB_NAME, charset='utf8mb4', collation='utf8mb4_unicode_ci', autocommit=False)
+            database=Config.DB_NAME, charset='utf8mb4', collation='utf8mb4_unicode_ci', autocommit=False, **ssl_args())
     return _pool
 
 

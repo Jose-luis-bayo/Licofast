@@ -32,6 +32,8 @@ class Config:
     DB_PASSWORD = env('DB_PASSWORD', '')
     DB_NAME = env('DB_NAME', 'licofast')
     DB_POOL = int(env('DB_POOL', '10'))
+    DB_SSL = env('DB_SSL', '0') == '1'   # 1 en la nube (TiDB Cloud, Aiven...): conexión cifrada obligatoria
+    DB_SSL_CA = env('DB_SSL_CA', '/etc/ssl/certs/ca-certificates.crt')
     JWT_SECRET = env('JWT_SECRET', 'dev-secret-licofast-cambiar-en-produccion')
     JWT_HORAS = int(env('JWT_HORAS', '8'))
     CORS_ORIGINS = [o.strip() for o in env('CORS_ORIGINS', 'http://localhost:5000,http://127.0.0.1:5000,http://localhost,http://127.0.0.1,http://localhost:80,http://127.0.0.1:80').split(',') if o.strip()]

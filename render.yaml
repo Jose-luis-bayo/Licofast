@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: licofast
+    runtime: python
+    plan: free
+    buildCommand: pip install -r backend/requirements-prod.txt
+    startCommand: cd backend && gunicorn run:app --workers 1 --threads 8 --bind 0.0.0.0:$PORT
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: JWT_SECRET
+        generateValue: true
+      - key: QR_SECRETO
+        generateValue: true
+      - key: DB_SSL
+        value: "1"
+      - key: DB_PORT
+        value: "4000"
+      - key: CORS_ORIGINS
+        value: "*"
+      - key: DB_HOST
+        sync: false
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_NAME
+        value: licofast

@@ -5,8 +5,9 @@
 (function() {
   var host = window.location.hostname || 'localhost';
   var port = window.location.port;
-  if (port === '5000') {
-    window.LF_API_BASE = '';
+  var local = (host === 'localhost' || host === '127.0.0.1');
+  if (!local || port === '5000') {
+    window.LF_API_BASE = '';   // nube (Render) o Flask directo: misma dirección que la página
   } else {
     window.LF_API_BASE = window.location.protocol + '//' + host + ':5000';
   }

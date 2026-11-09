@@ -6,6 +6,7 @@ import mysql.connector
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from app.config import Config, ROOT  # noqa: E402
+from app.db import ssl_args  # noqa: E402
 
 SQL = ROOT / 'database' / 'licofast.sql'
 
@@ -22,7 +23,7 @@ def sentencias(texto):
 
 
 def main():
-    conn = mysql.connector.connect(host=Config.DB_HOST, port=Config.DB_PORT, user=Config.DB_USER, password=Config.DB_PASSWORD, charset='utf8mb4')
+    conn = mysql.connector.connect(host=Config.DB_HOST, port=Config.DB_PORT, user=Config.DB_USER, password=Config.DB_PASSWORD, charset='utf8mb4', **ssl_args())
     cur = conn.cursor()
     if '--reset' in sys.argv:
         cur.execute(f'DROP DATABASE IF EXISTS `{Config.DB_NAME}`')
