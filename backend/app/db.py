@@ -1,4 +1,5 @@
 """Capa 5/4: conexión y transacciones (pool de conexiones MySQL)."""
+import os
 from contextlib import contextmanager
 from mysql.connector import pooling
 from .config import Config
@@ -10,7 +11,16 @@ def ssl_args():
     """Argumentos TLS para bases en la nube (DB_SSL=1). En XAMPP local no se usa."""
     if not Config.DB_SSL:
         return {}
-    return {'ssl_disabled': False, 'ssl_ca': Config.DB_SSL_CA, 'ssl_verify_cert': True}
+    ca = os.environ.get('DB_SSL_CA', '').strip()
+    if not ca:
+        try:                       # certificados de confianza incluidos con el paquete certifi
+            import certifi
+            ca = certifi.where()
+        except ImportError:
+            ca = '/etc/ssl/certs/ca-certificates.crt'
+    if ca and os.path.exists(ca):
+        return {'ssl_disabled': False, 'ssl_ca': ca, 'ssl_verify_cert': True}
+    return {'ssl_disabled': False}   # cifrado sin verificar el certificado (último recurso)
 
 
 def pool():
