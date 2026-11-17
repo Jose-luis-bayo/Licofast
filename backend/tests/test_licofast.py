@@ -22,6 +22,16 @@ def pedido(c, H, pid, cant=1, user='cliente1', **extra):
     return c.post('/api/v1/pedidos', json=body, headers=H[user])
 
 
+def liberar(c, H, vid, repartidor=3):
+    """Recorre las etapas internas: caja confirma → bodega prepara → (se fuerza el repartidor de la prueba)."""
+    r = c.put(f'/api/v1/pedidos/{vid}/confirmar', headers=H['cajero1'])
+    assert r.status_code == 200, r.get_json()
+    r = c.put(f'/api/v1/pedidos/{vid}/preparar', headers=H['bodega1'])
+    assert r.status_code == 200, r.get_json()
+    if sql('SELECT repartidor_id FROM ventas WHERE id=%s', (vid,))[0]['repartidor_id'] != repartidor:
+        assert c.put(f'/api/v1/pedidos/{vid}/asignacion', json={'repartidor_id': repartidor}, headers=H['bodega1']).status_code == 200
+
+
 # ------------------------------------------------------------------ Seguridad
 def test_login_y_token_firmado(c):
     r = c.post('/api/v1/auth/login', json={'usuario': 'cajero1', 'password': 'Admin1234'})
@@ -187,6 +197,7 @@ def test_entrega_no_entregado_repone_una_sola_vez(c, H):
     pid = nuevo_producto(c, H, 5)
     vid = pedido(c, H, pid, 2).get_json()['id']
     assert stock_de(pid) == 3
+    liberar(c, H, vid)
     assert c.put(f'/api/v1/entregas/{vid}', json={}, headers=H['repartidor1']).status_code == 422          # acción obligatoria
     r = c.put(f'/api/v1/entregas/{vid}', json={'accion': 'no_entregado', 'observacion': 'no contestó'}, headers=H['repartidor1'])
     assert r.status_code == 200 and r.get_json()['stock_repuesto'] and stock_de(pid) == 5
@@ -200,6 +211,8 @@ def test_entrega_no_entregado_repone_una_sola_vez(c, H):
 def test_entrega_conforme_cobra_el_total(c, H):
     pid = nuevo_producto(c, H, 5, 20)
     vid = pedido(c, H, pid, 2).get_json()['id']
+    assert c.put(f'/api/v1/entregas/{vid}/en-camino', headers=H['repartidor1']).status_code in (403, 409)   # aún no pasó por caja y bodega
+    liberar(c, H, vid)
     assert c.put(f'/api/v1/entregas/{vid}/en-camino', headers=H['repartidor1']).status_code == 200
     assert any(e['id'] == vid and e['estado'] == 'en_camino' for e in c.get('/api/v1/entregas', headers=H['repartidor1']).get_json())
     r = c.put(f'/api/v1/entregas/{vid}', json={'accion': 'entregado'}, headers=H['repartidor1'])
@@ -215,9 +228,12 @@ def test_entrega_conforme_cobra_el_total(c, H):
 def test_asignacion_por_admin(c, H):
     pid = nuevo_producto(c, H, 5)
     vid = pedido(c, H, pid).get_json()['id']
+    liberar(c, H, vid)
     assert c.put(f'/api/v1/pedidos/{vid}/asignacion', json={'repartidor_id': 3}, headers=H['cajero1']).status_code == 403
+    assert c.put(f'/api/v1/pedidos/{vid}/asignacion', json={'repartidor_id': 3}, headers=H['repartidor1']).status_code == 403
     assert c.put(f'/api/v1/pedidos/{vid}/asignacion', json={'repartidor_id': 5}, headers=H['admin_api']).status_code == 422   # no es repartidor
     assert c.put(f'/api/v1/pedidos/{vid}/asignacion', json={'repartidor_id': 3}, headers=H['admin_api']).status_code == 200
+    assert c.put(f'/api/v1/pedidos/{vid}/asignacion', json={'repartidor_id': 3}, headers=H['bodega1']).status_code == 200      # bodega también puede
 
 
 def test_pedido_vencido_libera_stock(c, H):
@@ -306,8 +322,11 @@ def test_cliente_paga_su_pedido_delivery_por_qr_y_luego_se_entrega_sin_doble_cob
     assert r2.get_json()['id'] == r.get_json()['id']                    # reutiliza el QR vigente
     assert c.post(f"/api/v1/pagos/simulador/qr/{r.get_json()['referencia']}/pagar", headers=H['cliente1']).status_code == 200
     v = c.get(f'/api/v1/pedidos/{vid}', headers=H['cliente1']).get_json()
-    assert v['estado'] == 'pendiente' and v['estado_pago'] == 'pagado'
+    assert v['estado'] == 'pendiente' and v['estado_pago'] == 'pagado' and v['metodo_pago'] == 'qr'
+    liberar(c, H, vid)
     assert next(e for e in c.get('/api/v1/entregas', headers=H['repartidor1']).get_json() if e['id'] == vid)['a_cobrar'] == 0
+    assert c.put(f'/api/v1/entregas/{vid}', json={'accion': 'entregado'}, headers=H['repartidor1']).status_code == 409   # primero debe salir (en camino)
+    assert c.put(f'/api/v1/entregas/{vid}/en-camino', headers=H['repartidor1']).status_code == 200
     assert c.put(f'/api/v1/entregas/{vid}', json={'accion': 'entregado'}, headers=H['repartidor1']).status_code == 200
     assert sql('SELECT COUNT(*) n FROM pagos WHERE venta_id=%s AND estado="confirmado"', (vid,))[0]['n'] == 1
 
@@ -333,7 +352,7 @@ def test_auditoria_y_resumen(c, H):
     r = c.get('/api/v1/auditoria?accion=LoginExitoso', headers=H['admin_api']).get_json()
     assert r['total'] >= 1
     acciones = {x['accion'] for x in c.get('/api/v1/auditoria?size=100', headers=H['admin_api']).get_json()['items']}
-    assert {'PedidoCreado', 'PedidoNoEntregado', 'ProductoCreado'} <= acciones
+    assert {'PedidoCreado', 'PedidoNoEntregado', 'ProductoCreado', 'PedidoConfirmado', 'PedidoPreparado'} <= acciones
     res = c.get('/api/v1/reportes/resumen', headers=H['admin_api']).get_json()
     assert 'hoy' in res and 'stock_bajo' in res
     assert c.get('/api/v1/pagos', headers=H['admin_api']).status_code == 200
@@ -380,7 +399,8 @@ def test_ubicacion_en_vivo_del_repartidor(c, H):
     pid = nuevo_producto(c, H, 5, 20)
     vid = pedido(c, H, pid, 1).get_json()['id']
     ub = f'/api/v1/entregas/{vid}/ubicacion'
-    assert c.put(ub, json={'lat': -19.03, 'lng': -65.26}, headers=H['repartidor1']).status_code == 403      # aún no le está asignado/en camino
+    liberar(c, H, vid)
+    assert c.put(ub, json={'lat': -19.03, 'lng': -65.26}, headers=H['repartidor1']).status_code == 409      # ya es suyo pero aún no salió (no está en camino)
     assert c.get(f'/api/v1/pedidos/{vid}/ubicacion', headers=H['cliente1']).get_json()['disponible'] is False
     c.put(f'/api/v1/entregas/{vid}/en-camino', headers=H['repartidor1'])
     assert c.put(ub, json={'lat': 'x', 'lng': 1}, headers=H['repartidor1']).status_code == 422
@@ -393,3 +413,171 @@ def test_ubicacion_en_vivo_del_repartidor(c, H):
     assert c.get(f'/api/v1/pedidos/{vid}/ubicacion', headers=H['admin_api']).status_code == 200
     c.put(f'/api/v1/entregas/{vid}', json={'accion': 'entregado'}, headers=H['repartidor1'])
     assert c.get(f'/api/v1/pedidos/{vid}/ubicacion', headers=H['cliente1']).get_json()['disponible'] is False
+
+
+# ------------------------------------------------------------------ Nuevo flujo: caja → bodega → repartidor, pagos y ubicación del cliente
+def test_flujo_completo_caja_bodega_repartidor(c, H):
+    pid = nuevo_producto(c, H, 10, 30)
+    d = pedido(c, H, pid, 2, metodo_pago='efectivo', lat=-19.0333, lng=-65.2627).get_json()
+    vid = d['id']
+    assert d['estado'] == 'pendiente' and d['metodo_pago'] == 'efectivo' and d['lat_entrega'] == -19.0333
+    # cada rol solo puede hacer lo suyo
+    assert c.put(f'/api/v1/pedidos/{vid}/preparar', headers=H['bodega1']).status_code == 409        # bodega no puede saltarse a caja
+    assert c.put(f'/api/v1/pedidos/{vid}/confirmar', headers=H['bodega1']).status_code == 403
+    assert c.put(f'/api/v1/pedidos/{vid}/confirmar', headers=H['cliente1']).status_code == 403
+    assert c.put(f'/api/v1/entregas/{vid}/en-camino', headers=H['repartidor1']).status_code in (403, 409)
+    assert c.get(f'/api/v1/pedidos/{vid}', headers=H['repartidor1']).status_code == 404               # el repartidor aún no lo ve
+    cola = c.get('/api/v1/pedidos/online', headers=H['cajero1']).get_json()
+    assert any(x['id'] == vid and x['estado'] == 'pendiente' and x['items'] for x in cola)
+    assert c.put(f'/api/v1/pedidos/{vid}/confirmar', headers=H['cajero1']).status_code == 200
+    assert c.put(f'/api/v1/pedidos/{vid}/confirmar', headers=H['cajero1']).status_code == 409        # ya no está pendiente
+    assert not any(e['id'] == vid for e in c.get('/api/v1/entregas', headers=H['repartidor1']).get_json())
+    r = c.put(f'/api/v1/pedidos/{vid}/preparar', headers=H['bodega1'])
+    assert r.status_code == 200 and r.get_json()['repartidor_id']
+    rep = r.get_json()['repartidor_id']
+    mio = {3: 'repartidor1'}.get(rep)
+    assert mio, 'solo existe el repartidor1 en la base de pruebas'
+    assert any(e['id'] == vid and e['estado'] == 'preparado' for e in c.get('/api/v1/entregas', headers=H['repartidor1']).get_json())
+    seg = c.get(f'/api/v1/pedidos/{vid}/seguimiento', headers=H['cliente1']).get_json()
+    assert [e['evento'] for e in seg['linea_tiempo']][:3] == ['Pedido recibido', 'Confirmado por caja', 'Preparado en bodega']
+    assert c.put(f'/api/v1/entregas/{vid}/en-camino', headers=H['repartidor1']).status_code == 200
+    ub = c.get(f'/api/v1/pedidos/{vid}/ubicacion', headers=H['cliente1']).get_json()
+    assert ub['destino_lat'] == -19.0333 and ub['destino_lng'] == -65.2627
+    assert c.put(f'/api/v1/entregas/{vid}', json={'accion': 'entregado'}, headers=H['repartidor1']).status_code == 200
+
+
+def test_reparto_equitativo_al_repartidor_con_menos_carga(c, H):
+    nuevo = c.post('/api/v1/usuarios', json={'nombre': 'Rapi', 'apellido': 'Dos', 'ci': 'REPA-002', 'usuario': 'repartidor2', 'password': 'Admin1234', 'rol': 'repartidor'}, headers=H['admin_api'])
+    assert nuevo.status_code == 201, nuevo.get_json()
+    rep2 = nuevo.get_json()['id']
+    sql("UPDATE ventas SET estado='no_entregado' WHERE tipo_venta='delivery' AND estado IN ('preparado','en_camino')")   # limpia cargas de otras pruebas
+    pid = nuevo_producto(c, H, 20, 10)
+    asignados = []
+    for _ in range(4):
+        vid = pedido(c, H, pid).get_json()['id']
+        assert c.put(f'/api/v1/pedidos/{vid}/confirmar', headers=H['cajero1']).status_code == 200
+        asignados.append(c.put(f'/api/v1/pedidos/{vid}/preparar', headers=H['bodega1']).get_json()['repartidor_id'])
+    assert sorted(asignados.count(x) for x in set(asignados)) == [2, 2] and set(asignados) == {3, rep2}      # 2 y 2: carga pareja
+    assert asignados[0] != asignados[1]                                                                          # alterna
+    carga = {r['id']: r['por_salir'] for r in c.get('/api/v1/repartidores', headers=H['bodega1']).get_json()}
+    assert carga[3] == 2 and carga[rep2] == 2
+    assert c.get('/api/v1/repartidores', headers=H['cajero1']).status_code == 403
+    sql("UPDATE usuarios SET activo=0 WHERE id=%s", (rep2,))
+    vid = pedido(c, H, pid).get_json()['id']
+    c.put(f'/api/v1/pedidos/{vid}/confirmar', headers=H['cajero1'])
+    assert c.put(f'/api/v1/pedidos/{vid}/preparar', headers=H['bodega1']).get_json()['repartidor_id'] == 3   # un repartidor inactivo no recibe pedidos
+
+
+def test_rechazo_de_caja_repone_stock(c, H):
+    pid = nuevo_producto(c, H, 5, 10)
+    vid = pedido(c, H, pid, 3).get_json()['id']
+    assert stock_de(pid) == 2
+    assert c.put(f'/api/v1/pedidos/{vid}/rechazar', json={}, headers=H['cajero1']).status_code == 422       # motivo obligatorio
+    r = c.put(f'/api/v1/pedidos/{vid}/rechazar', json={'motivo': 'dirección fuera de zona'}, headers=H['cajero1'])
+    assert r.status_code == 200 and stock_de(pid) == 5
+    assert c.put(f'/api/v1/pedidos/{vid}/confirmar', headers=H['cajero1']).status_code == 409
+
+
+def test_pago_en_linea_debe_estar_pagado_para_confirmar(c, H):
+    pid = nuevo_producto(c, H, 5, 50)
+    d = pedido(c, H, pid, 1, metodo_pago='qr').get_json()
+    vid = d['id']
+    r = c.put(f'/api/v1/pedidos/{vid}/confirmar', headers=H['cajero1'])
+    assert r.status_code == 409 and r.get_json()['error']['codigo'] == 'PAGO_PENDIENTE'
+    p = c.post('/api/v1/pagos', json={'venta_id': vid, 'metodo': 'qr'}, headers=H['cliente1']).get_json()
+    assert c.post(f"/api/v1/pagos/simulador/qr/{p['referencia']}/pagar", headers=H['cliente1']).status_code == 200
+    assert c.put(f'/api/v1/pedidos/{vid}/confirmar', headers=H['cajero1']).status_code == 200
+
+
+def test_pago_paypal_simulado(c, H):
+    pid = nuevo_producto(c, H, 5, 69.6)
+    vid = pedido(c, H, pid, 1, metodo_pago='paypal').get_json()['id']
+    assert c.post('/api/v1/pagos', json={'venta_id': vid, 'metodo': 'paypal'}, headers=H['cajero1']).status_code == 403
+    r = c.post('/api/v1/pagos', json={'venta_id': vid, 'metodo': 'paypal'}, headers=H['cliente1'])
+    p = r.get_json()
+    assert r.status_code == 201 and p['metodo'] == 'paypal' and p['estado'] == 'pendiente' and '/pagos/simulador/paypal/' in p['qr_payload']
+    assert c.post('/api/v1/pagos', json={'venta_id': vid, 'metodo': 'paypal'}, headers=H['cliente1']).get_json()['id'] == p['id']   # reutiliza la orden
+    from app.modules.pagos.adapter import PayPalAdapter
+    assert float(PayPalAdapter.usd(69.6)) == 10.0                                                                   # 69.6 Bs / 6.96 = 10 USD
+    pag = c.get(f"/api/v1/pagos/simulador/paypal/{p['referencia']}")
+    assert pag.status_code == 200 and b'PayPal' in pag.data
+    ret = c.get(f"/api/v1/pagos/paypal/retorno?token={p['referencia']}")
+    assert ret.status_code == 200 and 'Pago recibido' in ret.get_data(as_text=True)
+    assert c.get(f"/api/v1/pagos/paypal/retorno?token={p['referencia']}").status_code == 200                       # idempotente
+    v = c.get(f'/api/v1/pedidos/{vid}', headers=H['cliente1']).get_json()
+    assert v['estado_pago'] == 'pagado' and v['pago']['metodo'] == 'paypal'
+    assert sql('SELECT COUNT(*) n FROM pagos WHERE venta_id=%s AND estado="confirmado"', (vid,))[0]['n'] == 1
+    assert 'No se pudo' in c.get('/api/v1/pagos/paypal/retorno?token=PPINEXISTENTE').get_data(as_text=True)
+
+
+def test_paypal_real_sin_credenciales_responde_503(c, H, monkeypatch):
+    monkeypatch.setattr(Config, 'PAYPAL_MODO', 'sandbox'); monkeypatch.setattr(Config, 'PAYPAL_CLIENT_ID', '')
+    pid = nuevo_producto(c, H, 5, 20)
+    vid = pedido(c, H, pid, 1, metodo_pago='paypal').get_json()['id']
+    r = c.post('/api/v1/pagos', json={'venta_id': vid, 'metodo': 'paypal'}, headers=H['cliente1'])
+    assert r.status_code == 503 and r.get_json()['error']['codigo'] == 'PASARELA_NO_DISPONIBLE'
+
+
+def test_pedido_valida_metodo_y_ubicacion(c, H):
+    pid = nuevo_producto(c, H, 5)
+    assert pedido(c, H, pid, 1, metodo_pago='bitcoin').status_code == 422
+    assert pedido(c, H, pid, 1, lat='x', lng=1).status_code == 422
+    assert pedido(c, H, pid, 1, lat=95, lng=1).status_code == 422
+    assert pedido(c, H, pid, 1, lat=-19.03, lng=-65.26, metodo_pago='efectivo').status_code == 201
+
+
+# ------------------------------------------------------------------ Cupones y vales
+def test_cupon_porcentaje_se_aplica_y_se_consume(c, H):
+    pid = nuevo_producto(c, H, 10, 100)
+    r = c.post('/api/v1/cupones', json={'codigo': 'hola10', 'tipo': 'porcentaje', 'valor': 10, 'usos_por_cliente': 1}, headers=H['admin_api'])
+    assert r.status_code == 201 and r.get_json()['codigo'] == 'HOLA10'
+    assert c.post('/api/v1/cupones', json={'codigo': 'HOLA10', 'tipo': 'monto', 'valor': 5}, headers=H['admin_api']).status_code == 409
+    assert c.post('/api/v1/cupones', json={'codigo': 'X', 'tipo': 'monto', 'valor': 5}, headers=H['cliente1']).status_code == 403
+    v = c.post('/api/v1/cupones/validar', json={'codigo': 'hola10', 'items': [{'producto_id': pid, 'cantidad': 2}]}, headers=H['cliente1']).get_json()
+    assert v['descuento_cupon'] == 20 and v['total'] == 180
+    d = pedido(c, H, pid, 2, cupon='HOLA10').get_json()
+    assert d['total'] == 180
+    assert sql('SELECT cupon_codigo FROM ventas WHERE id=%s', (d['id'],))[0]['cupon_codigo'] == 'HOLA10'
+    r = pedido(c, H, pid, 1, cupon='HOLA10')                                # ya lo usó
+    assert r.status_code == 422 and 'Ya usó' in r.get_json()['error']['mensaje']
+    assert stock_de(pid) == 8                                                # el pedido rechazado no descontó stock
+    assert pedido(c, H, pid, 1, cupon='NOEXISTE').status_code == 422
+
+
+def test_cupon_monto_minimo_vigencia_y_vale_personal(c, H):
+    pid = nuevo_producto(c, H, 10, 50)
+    c.post('/api/v1/cupones', json={'codigo': 'MIN200', 'tipo': 'monto', 'valor': 30, 'minimo_compra': 200}, headers=H['admin_api'])
+    assert pedido(c, H, pid, 1, cupon='MIN200').status_code == 422           # 50 < 200
+    assert pedido(c, H, pid, 4, cupon='MIN200').get_json()['total'] == 170
+    c.post('/api/v1/cupones', json={'codigo': 'VIEJO', 'tipo': 'monto', 'valor': 5, 'vigente_hasta': '2020-01-01'}, headers=H['admin_api'])
+    assert 'venció' in pedido(c, H, pid, 1, cupon='VIEJO').get_json()['error']['mensaje']
+    cli = sql("SELECT id FROM usuarios WHERE usuario='cliente1'")[0]['id']
+    v = c.post('/api/v1/cupones/asignar', json={'usuario_id': cli, 'tipo': 'monto', 'valor': 15}, headers=H['admin_api']).get_json()
+    assert v['codigo'].startswith('VALE-')
+    assert any(x['codigo'] == v['codigo'] and x['usable'] for x in c.get('/api/v1/mis-cupones', headers=H['cliente1']).get_json())
+    assert pedido(c, H, pid, 1, cupon=v['codigo']).get_json()['total'] == 35
+
+
+def test_cupon_se_devuelve_si_el_pedido_no_se_entrega_y_descuento_no_supera_total(c, H):
+    pid = nuevo_producto(c, H, 10, 20)
+    c.post('/api/v1/cupones', json={'codigo': 'GRANDE', 'tipo': 'monto', 'valor': 500}, headers=H['admin_api'])
+    d = pedido(c, H, pid, 1, cupon='GRANDE').get_json()
+    assert d['total'] == 0
+    c.put(f"/api/v1/pedidos/{d['id']}/rechazar", json={'motivo': 'prueba'}, headers=H['cajero1'])
+    assert pedido(c, H, pid, 1, cupon='GRANDE').status_code == 201           # el uso se liberó
+
+
+def test_recompensa_cliente_frecuente(c, H):
+    sql("DELETE FROM cupones WHERE regla='frecuente'")          # otras pruebas ya pudieron premiar a este cliente en el mes
+    pid = nuevo_producto(c, H, 20, 10)
+    premios = []
+    for _ in range(3):
+        vid = pedido(c, H, pid, 1).get_json()['id']
+        liberar(c, H, vid)
+        c.put(f'/api/v1/entregas/{vid}/en-camino', headers=H['repartidor1'])
+        r = c.put(f'/api/v1/entregas/{vid}', json={'accion': 'entregado'}, headers=H['repartidor1']).get_json()
+        premios += r.get('recompensa_cliente', [])
+    assert len(premios) == 1 and premios[0].startswith('GRACIAS-')      # solo un premio por periodo
+    mis = c.get('/api/v1/mis-cupones', headers=H['cliente1']).get_json()
+    assert any(x['origen'] == 'recompensa' and x['valor'] == 10 for x in mis)
+    assert c.post('/api/v1/cupones/recompensas', headers=H['admin_api']).get_json()['emitidos'] == []   # un premio por periodo

@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LicoFast · Licorería</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🍾%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -12,8 +13,13 @@
   <a class="brand" href="#/"><span class="logo">🍾</span><span>Lico<b>Fast</b></span></a>
   <nav id="menu" aria-label="Menú principal"></nav>
   <div id="sesion"></div>
-  <button class="hamb" id="hamb" data-act="menu" aria-label="Abrir menú" aria-expanded="false"><span></span><span></span><span></span></button>
+  <button class="hamb" id="hamb" data-act="menu" aria-label="Abrir menú" aria-controls="drawer"><span></span><span></span><span></span></button>
 </header>
+<!-- Menú lateral (Bootstrap Offcanvas): hamburguesa para móvil, tablet y para todo el personal -->
+<div class="offcanvas offcanvas-start" tabindex="-1" id="drawer" aria-label="Menú">
+  <div class="offcanvas-header"><a class="brand" href="#/"><span class="logo">🍾</span><span>Lico<b>Fast</b></span></a><button type="button" class="dr-x" data-bs-dismiss="offcanvas" aria-label="Cerrar menú">✕</button></div>
+  <div class="offcanvas-body"><div id="drawerUser"></div><nav id="drawerMenu" aria-label="Navegación"></nav><div id="drawerPie"></div></div>
+</div>
 <main id="app" class="wrap"></main>
 <footer class="pie">
   <div class="pie-in">
@@ -47,14 +53,19 @@
 <a class="wa-flotante" href="https://wa.me/59161885077?text=Hola%20LicoFast%2C%20quiero%20hacer%20un%20pedido" target="_blank" rel="noopener" aria-label="Escríbenos por WhatsApp"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21l1.6-4.6A8.6 8.6 0 1 1 8 19.6L3 21z"/><path d="M9.2 8.4c-.3 2.6 2.6 5.8 5.8 6.1l1.2-1.3-1.9-1-.9.7c-.9-.4-1.7-1.2-2.1-2.1l.7-.9-1-1.9-1.8.4z" fill="#fff" stroke="none"/></svg></a>
 <div id="modal" class="modal" hidden></div>
 <div id="toasts"></div>
+<script src="vendor/bootstrap.bundle.min.js"></script>
+<script src="vendor/leaflet/leaflet.js"></script>
 <script src="config.js"></script>
 <script src="js/vendor/qrcode.js"></script>
 <script src="js/api.js"></script>
 <script src="js/ui.js"></script>
+<script src="js/mapa.js"></script>
 <script src="js/vistas-publico.js"></script>
 <script src="js/vistas-caja.js"></script>
 <script src="js/vistas-bodega-reparto.js"></script>
+<script src="js/vistas-flujo.js"></script>
 <script src="js/vistas-admin.js"></script>
+<script src="js/vistas-cupones.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

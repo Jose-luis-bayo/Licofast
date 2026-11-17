@@ -1,0 +1,2 @@
+clave maps goolge AIzaSyAEdgylzbN4LKkFt6iZcERuo3V2c8ILd_c
+python parchear_android.py AIzaSyAEdgylzbN4LKkFt6iZcERuo3V2c8ILd_c

@@ -94,7 +94,7 @@ def pedidos_whatsapp(): return jsonify(PedidoService.pedido_whatsapp(g.user, _js
 
 
 @bp.get('/pedidos')
-@auth_required('cliente', 'administrador')
+@auth_required('cliente', 'administrador', 'empleado')
 def pedidos_get():
     page, size, off = v.pagina(request.args)
     f = {k: request.args.get(k) for k in ('estado', 'estado_pago', 'tipo', 'desde', 'hasta')}
@@ -139,3 +139,42 @@ def alertas(): return jsonify(InventarioService.alertas())
 @bp.get('/reportes/resumen')
 @auth_required('administrador')
 def resumen(): return jsonify(ReporteService.resumen())
+
+
+# ------------------------- Cupones y vales -------------------------
+from .cupones import CuponService  # noqa: E402
+
+
+@bp.post('/cupones/validar')
+@auth_required('cliente')
+def cupon_validar(): return jsonify(CuponService.validar(g.user, _json()))
+
+
+@bp.get('/mis-cupones')
+@auth_required('cliente')
+def mis_cupones(): return jsonify(CuponService.mis_cupones(g.user))
+
+
+@bp.get('/cupones')
+@auth_required('administrador')
+def cupones_listar(): return jsonify(CuponService.listar(g.user))
+
+
+@bp.post('/cupones')
+@auth_required('administrador')
+def cupones_crear(): return jsonify(CuponService.crear(g.user, _json())), 201
+
+
+@bp.put('/cupones/<int:cid>')
+@auth_required('administrador')
+def cupones_editar(cid): return jsonify(CuponService.editar(g.user, cid, _json()))
+
+
+@bp.post('/cupones/asignar')
+@auth_required('administrador')
+def cupones_asignar(): return jsonify(CuponService.asignar(g.user, _json())), 201
+
+
+@bp.post('/cupones/recompensas')
+@auth_required('administrador')
+def cupones_recompensas(): return jsonify(CuponService.generar_recompensas(g.user))

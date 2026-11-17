@@ -44,8 +44,33 @@ def guardar_ubicacion(vid): return jsonify(EntregaService.guardar_ubicacion(g.us
 def ubicacion(vid): return jsonify(EntregaService.ubicacion(g.user, vid))
 
 
+@bp.get('/pedidos/online')
+@auth_required('cajero', 'empleado', 'administrador')
+def online(): return jsonify(EntregaService.online(g.user))
+
+
+@bp.get('/repartidores')
+@auth_required('empleado', 'administrador')
+def repartidores(): return jsonify(EntregaService.repartidores(g.user))
+
+
+@bp.put('/pedidos/<int:vid>/confirmar')
+@auth_required('cajero', 'administrador')
+def confirmar(vid): return jsonify(EntregaService.confirmar(g.user, vid))
+
+
+@bp.put('/pedidos/<int:vid>/rechazar')
+@auth_required('cajero', 'administrador')
+def rechazar(vid): return jsonify(EntregaService.rechazar(g.user, vid, _json()))
+
+
+@bp.put('/pedidos/<int:vid>/preparar')
+@auth_required('empleado', 'administrador')
+def preparar(vid): return jsonify(EntregaService.preparar(g.user, vid))
+
+
 @bp.put('/pedidos/<int:vid>/asignacion')
-@auth_required('administrador')
+@auth_required('administrador', 'empleado')
 def asignar(vid): return jsonify(EntregaService.asignar(g.user, vid, _json()))
 
 

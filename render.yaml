@@ -29,3 +29,13 @@ services:
         sync: false
       - key: DB_NAME
         value: licofast
+      - key: PUBLIC_URL
+        value: https://licofast-phvl.onrender.com
+      - key: PAYPAL_MODO
+        value: simulado
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_SECRET
+        sync: false
+      - key: PAYPAL_TASA_BOB
+        value: "6.96"

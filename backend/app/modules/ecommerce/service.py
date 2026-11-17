@@ -246,7 +246,7 @@ class InventarioService:
 
 class PedidoService:
     @staticmethod
-    def _crear(cur, *, cliente_id, cajero_id, tipo, canal, items, creador_id, entrega=None):
+    def _crear(cur, *, cliente_id, cajero_id, tipo, canal, items, creador_id, entrega=None, estado_inicial=None, cupon=None):
         lineas = InventarioService.reservar(cur, items)
         promos = PR.vigentes(cur)
         total, desc, detalle = Decimal('0'), Decimal('0'), []
@@ -255,13 +255,26 @@ class PedidoService:
             total += precio * cant
             desc += (Decimal(p['precio']) - precio) * cant
             detalle.append((p, cant, precio))
+        cup, dcup = None, Decimal('0')
+        if cupon and cliente_id and tipo == 'delivery':                  # el cupón se aplica sobre el total ya con promociones
+            from .cupones import CuponService
+            cup, dcup = CuponService.reservar(cur, cupon, cliente_id, total)
+            total, desc = total - dcup, desc + dcup
         datos = dict(usuario_id=cliente_id, cajero_id=cajero_id, tipo_venta=tipo, canal=canal, total=_q(total), descuento=_q(desc), estado='pendiente', estado_pago='pendiente')
+        if cup:
+            datos['cupon_codigo'] = cup['codigo']
         if entrega:
-            datos.update(direccion_entrega=entrega['direccion'], referencia_entrega=entrega['referencia'], telefono_contacto=entrega['telefono'])
+            datos.update(direccion_entrega=entrega['direccion'], referencia_entrega=entrega['referencia'], telefono_contacto=entrega['telefono'],
+                         lat_entrega=entrega['lat'], lng_entrega=entrega['lng'], metodo_pago=entrega['metodo_pago'])
+            if estado_inicial:
+                datos.update(estado=estado_inicial, confirmado_en=datetime.datetime.now(), confirmado_por=creador_id)
         vid = V.insertar(cur, datos)
         for p, cant, precio in detalle:
             V.insertar_detalle(cur, vid, p['id'], cant, precio)
         InventarioService.descontar(cur, vid, lineas, creador_id)
+        if cup:
+            from .cupones import CuponRepository
+            CuponRepository.registrar_uso(cur, cup['id'], cliente_id, vid, _q(dcup))
         return vid, _q(total), _q(desc)
 
     @staticmethod
@@ -270,7 +283,19 @@ class PedidoService:
         tel = v.texto(d, 'telefono_contacto', obligatorio=False, max_len=30) or telefono_defecto
         if not tel:
             raise invalido('El teléfono de contacto es obligatorio', {'campo': 'telefono_contacto'})
-        return {'direccion': direccion, 'telefono': tel, 'referencia': v.texto(d, 'referencia_entrega', obligatorio=False, max_len=255)}
+        metodo = d.get('metodo_pago') or 'efectivo'
+        if metodo not in ('efectivo', 'qr', 'paypal'):
+            raise invalido('El método de pago debe ser «efectivo», «qr» o «paypal»', {'campo': 'metodo_pago'})
+        lat = lng = None
+        if d.get('lat') not in (None, '') or d.get('lng') not in (None, ''):
+            try:
+                lat, lng = round(float(d.get('lat')), 6), round(float(d.get('lng')), 6)
+            except (TypeError, ValueError):
+                raise invalido('La ubicación debe tener latitud y longitud numéricas', {'campo': 'lat/lng'})
+            if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+                raise invalido('Coordenadas fuera de rango', {'campo': 'lat/lng'})
+        return {'direccion': direccion, 'telefono': tel, 'referencia': v.texto(d, 'referencia_entrega', obligatorio=False, max_len=255),
+                'metodo_pago': metodo, 'lat': lat, 'lng': lng}
 
     @staticmethod
     def _exigir_mayor(nacimiento):
@@ -307,8 +332,10 @@ class PedidoService:
         PedidoService._exigir_mayor(cli.get('fecha_nacimiento'))
         entrega = PedidoService._entrega(d, cli.get('telefono'))
         with transaction() as cur:
+            # un pedido cargado por el cajero (WhatsApp) ya fue revisado por él: pasa directo a bodega
             vid, total, desc = PedidoService._crear(cur, cliente_id=cli['id'], cajero_id=user['id'] if cliente else None, tipo='delivery', canal=canal,
-                                                    items=d.get('items') or [], creador_id=user['id'], entrega=entrega)
+                                                    items=d.get('items') or [], creador_id=user['id'], entrega=entrega, cupon=d.get('cupon'),
+                                                    estado_inicial='confirmado' if (cliente and entrega['metodo_pago'] == 'efectivo') else None)
         bus.publish('PedidoCreado', usuario_id=user['id'], entidad='venta', entidad_id=vid, detalle={'total': str(total), 'canal': canal, 'cliente_id': cli['id']})
         return PedidoService.obtener(user, vid)
 
@@ -357,8 +384,10 @@ class PedidoService:
             return True
         if r == 'cliente':
             return venta['usuario_id'] == user['id']
+        if r == 'empleado':
+            return venta['tipo_venta'] == 'delivery'
         if r == 'repartidor':
-            return venta['tipo_venta'] == 'delivery' and venta['repartidor_id'] in (None, user['id'])
+            return venta['tipo_venta'] == 'delivery' and venta['repartidor_id'] == user['id']
         return False
 
     @staticmethod
@@ -379,6 +408,8 @@ class PedidoService:
         f = dict(f)
         if user['rol'] == 'cliente':
             f['usuario_id'] = user['id']
+        elif user['rol'] == 'empleado':
+            f['tipo'] = 'delivery'
         elif user['rol'] == 'cajero' and f.get('alcance') != 'todos':
             f['cajero_id'] = user['id']
         with read() as cur:
@@ -444,6 +475,6 @@ class ReporteService:
             top = all_(cur, "SELECT p.nombre, SUM(d.cantidad) AS unidades FROM detalle_venta d JOIN ventas v ON v.id=d.venta_id JOIN productos p ON p.id=d.producto_id "
                                                                       "WHERE v.estado_pago='pagado' AND DATE(v.created_at)=CURDATE() GROUP BY p.id,p.nombre ORDER BY unidades DESC LIMIT 5")
             bajos = one(cur, 'SELECT COUNT(*) AS n FROM productos WHERE activo=1 AND stock<=stock_minimo')['n']
-            pendientes = one(cur, "SELECT COUNT(*) AS n FROM ventas WHERE tipo_venta='delivery' AND estado IN ('pendiente','en_camino')")['n']
+            pendientes = one(cur, "SELECT COUNT(*) AS n FROM ventas WHERE tipo_venta='delivery' AND estado IN ('pendiente','confirmado','preparado','en_camino')")['n']
         return {'hoy': {'ventas': hoy['ventas'], 'monto': float(hoy['monto'])}, 'por_estado': estados, 'cobros_hoy': [_num(m) for m in metodos],
                 'top_productos': [_num(t) for t in top], 'stock_bajo': bajos, 'deliveries_abiertos': pendientes}

@@ -13,6 +13,10 @@ class PagoRepository:
                    (venta_id, monto, referencia, payload, minutos))
 
     @staticmethod
+    def insertar_paypal(cur, venta_id, monto, orden_id, approve_url):
+        return run(cur, "INSERT INTO pagos(venta_id,metodo,monto,estado,referencia,qr_payload) VALUES(%s,'paypal',%s,'pendiente',%s,%s)", (venta_id, monto, orden_id, approve_url))
+
+    @staticmethod
     def por_id(cur, pid, lock=False): return one(cur, 'SELECT * FROM pagos WHERE id=%s' + (' FOR UPDATE' if lock else ''), (pid,))
 
     @staticmethod
@@ -48,7 +52,8 @@ class PagoRepository:
         where = ' AND '.join(w)
         res = one(cur, f"SELECT COUNT(*) AS n, COALESCE(SUM(CASE WHEN p.estado='confirmado' THEN p.monto END),0) AS confirmado, "
                        f"COALESCE(SUM(CASE WHEN p.estado='confirmado' AND p.metodo='efectivo' THEN p.monto END),0) AS efectivo, "
-                       f"COALESCE(SUM(CASE WHEN p.estado='confirmado' AND p.metodo='qr' THEN p.monto END),0) AS qr FROM pagos p WHERE {where}", a)
+                       f"COALESCE(SUM(CASE WHEN p.estado='confirmado' AND p.metodo='qr' THEN p.monto END),0) AS qr, "
+                       f"COALESCE(SUM(CASE WHEN p.estado='confirmado' AND p.metodo='paypal' THEN p.monto END),0) AS paypal FROM pagos p WHERE {where}", a)
         filas = all_(cur, f'SELECT p.id,p.venta_id,p.metodo,p.monto,p.estado,p.referencia,p.confirmado_en,p.motivo_anulacion,p.created_at FROM pagos p WHERE {where} ORDER BY p.id DESC LIMIT %s OFFSET %s', [*a, limit, offset])
         return res, filas
 

@@ -3,6 +3,9 @@ window.LF = window.LF || {};
 LF.esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 LF.bs = n => 'Bs ' + Number(n || 0).toLocaleString('es-BO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 LF.fecha = s => s ? String(s).replace('T', ' ').slice(0, 16) : '—';
+LF.ETAPAS = { pendiente: 'Esperando a caja', confirmado: 'En bodega', preparado: 'Listo para reparto', en_camino: 'En camino', entregada: 'Entregado', no_entregado: 'No entregado', pagada: 'Pagada' };
+LF.badgeEstado = e => `<span class="badge b-e-${LF.esc(e)}">${LF.esc(LF.ETAPAS[e] || String(e).replace('_', ' '))}</span>`;
+LF.METODOS = { efectivo: '💵 Efectivo al recibir', qr: '📲 QR bancario', paypal: '💳 PayPal' };
 LF.badge = (e) => `<span class="badge b-${LF.esc(e)}">${LF.esc(String(e).replace('_', ' '))}</span>`;
 LF.ico = c => ({ Ron: '🥃', Vodka: '🍸', Whisky: '🥃', Cerveza: '🍺', Vino: '🍷', Singani: '🍇', 'Combos y Promociones': '🎁' }[c] || '🍾');
 LF.$ = (s, r = document) => r.querySelector(s);
@@ -46,8 +49,9 @@ LF.campo = (nombre, etiqueta, tipo = 'text', valor = '', extra = '') =>
 LF.opciones = (lista, sel, vacio) => (vacio ? `<option value="">${vacio}</option>` : '') + lista.map(([v, t]) => `<option value="${LF.esc(v)}" ${String(v) === String(sel) ? 'selected' : ''}>${LF.esc(t)}</option>`).join('');
 
 LF.pagina = (titulo, sub, cuerpo) => `<h1>${titulo}</h1><p class="sub">${sub || ''}</p>${cuerpo}`;
+// En pantallas pequeñas cada fila se convierte en una tarjeta (la etiqueta sale de data-l)
 LF.tabla = (cols, filas, vacio = 'Sin registros') =>
-  filas.length ? `<div class="tw"><table><thead><tr>${cols.map(c => `<th class="${c.cls || ''}">${c.t}</th>`).join('')}</tr></thead><tbody>${filas.map(f => `<tr>${cols.map(c => `<td class="${c.cls || ''}">${c.f(f)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`
+  filas.length ? `<div class="tw rs"><table><thead><tr>${cols.map(c => `<th class="${c.cls || ''}">${c.t}</th>`).join('')}</tr></thead><tbody>${filas.map(f => `<tr>${cols.map(c => `<td class="${c.cls || ''}" data-l="${LF.esc(c.t)}">${c.f(f)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`
   : `<div class="card empty">${vacio}</div>`;
 
 // Muestra un QR de pago y consulta el estado hasta confirmarse

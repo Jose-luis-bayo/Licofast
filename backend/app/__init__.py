@@ -45,6 +45,11 @@ def create_app():
     app.json = Proveedor(app)
     CORS(app, resources={r'/api/*': {'origins': Config.CORS_ORIGINS}}, allow_headers=['Content-Type', 'Authorization', 'Idempotency-Key', 'X-Firma'])
 
+    from .migraciones import migrar
+    try:
+        migrar()
+    except Exception:
+        log.exception('No se pudo verificar el esquema de la base de datos')
     from .modules.seguridad.controller import bp as seg
     from .modules.ecommerce.controller import bp as eco
     from .modules.pagos.controller import bp as pag

@@ -94,6 +94,7 @@ class PromocionRepository:
 class VentaRepository:
     COLS = ("v.id,v.usuario_id,v.cajero_id,v.repartidor_id,v.tipo_venta,v.canal,v.total,v.descuento,v.monto_cobrado,v.estado,v.estado_pago,"
             "v.direccion_entrega,v.referencia_entrega,v.telefono_contacto,v.observacion_entrega,v.fecha_entrega,v.created_at,"
+            "v.lat_entrega,v.lng_entrega,v.metodo_pago,v.confirmado_en,v.preparado_en,"
             "CONCAT(c.nombre,' ',c.apellido) AS cliente, CONCAT(r.nombre,' ',r.apellido) AS repartidor")
     JOIN = 'FROM ventas v LEFT JOIN usuarios c ON c.id=v.usuario_id LEFT JOIN usuarios r ON r.id=v.repartidor_id'
 

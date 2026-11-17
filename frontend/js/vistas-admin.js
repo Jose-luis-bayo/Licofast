@@ -8,7 +8,7 @@ LF.rutas['/panel'] = async () => {
   return LF.pagina('Panel de control', 'Resumen del día (CU-E10).', `<div class="grid g4">
     <div class="card stat"><div class="l">Ventas pagadas hoy</div><div class="v">${r.hoy.ventas}</div></div><div class="card stat"><div class="l">Monto cobrado hoy</div><div class="v" style="color:var(--pag)">${LF.bs(r.hoy.monto)}</div></div>
     <div class="card stat"><div class="l">Deliveries abiertos</div><div class="v" style="color:var(--dis)">${r.deliveries_abiertos}</div></div><div class="card stat"><div class="l">Productos con stock bajo</div><div class="v" style="color:var(--bad)">${r.stock_bajo}</div></div></div>
-  <div class="grid g2" style="margin-top:16px"><div class="card"><h3>Pedidos por estado</h3>${['pendiente', 'pagada', 'en_camino', 'entregada', 'no_entregado'].map(k => `<div class="row" style="padding:3px 0">${LF.badge(k)}<span class="sp"></span><b>${st(k)}</b></div>`).join('')}</div>
+  <div class="grid g2" style="margin-top:16px"><div class="card"><h3>Pedidos por estado</h3>${['pendiente', 'confirmado', 'preparado', 'en_camino', 'entregada', 'no_entregado', 'pagada'].map(k => `<div class="row" style="padding:3px 0">${LF.badgeEstado(k)}<span class="sp"></span><b>${st(k)}</b></div>`).join('')}</div>
   <div class="card"><h3>Cobros de hoy</h3>${r.cobros_hoy.map(c => `<div class="row" style="padding:3px 0">${LF.esc(c.metodo)} (${c.n})<span class="sp"></span><b>${LF.bs(c.monto)}</b></div>`).join('') || '<p class="sub">Sin cobros todavía</p>'}</div>
   <div class="card"><h3>Más vendidos hoy</h3>${r.top_productos.map(t => `<div class="row" style="padding:3px 0">${LF.esc(t.nombre)}<span class="sp"></span><b>${t.unidades}</b></div>`).join('') || '<p class="sub">Sin ventas todavía</p>'}</div></div>`);
 };
@@ -120,14 +120,16 @@ LF.acc.bajaPromo = async el => { if (!confirm('¿Eliminar la promoción?')) retu
 // ---- Pedidos y asignación ----
 LF.filtroPed = '';
 LF.rutas['/pedidos-admin'] = async () => {
-  const [d, reps] = await Promise.all([LF.get('/pedidos?size=60' + (LF.filtroPed ? '&estado=' + LF.filtroPed : '')), LF.get('/usuarios?rol=repartidor')]); LF.reps = reps.filter(r => r.activo);
-  return LF.pagina('Pedidos', 'Supervisión y asignación de repartidores (CU-D02, CU-D08).', `<div class="row" style="margin-bottom:10px"><select data-act="filtroPed" style="max-width:220px">${LF.opciones([['pendiente', 'Pendientes'], ['en_camino', 'En camino'], ['entregada', 'Entregados'], ['no_entregado', 'No entregados'], ['pagada', 'Pagadas (mostrador)']], LF.filtroPed, 'Todos los estados')}</select></div>
+  const [d, reps] = await Promise.all([LF.get('/pedidos?size=60' + (LF.filtroPed ? '&estado=' + LF.filtroPed : '')), LF.get('/repartidores')]); LF.reps = reps;
+  const acciones = v => v.tipo_venta !== 'delivery' ? '' : (v.estado === 'pendiente' ? `<button class="btn sm ok" data-act="confirmarPed" data-id="${v.id}">✅ Confirmar</button> <button class="btn sm bad" data-act="rechazarPed" data-id="${v.id}">❌</button>`
+    : v.estado === 'confirmado' ? `<button class="btn sm" data-act="prepararPed" data-id="${v.id}">📦 Preparar</button>` : '');
+  return LF.pagina('Pedidos', 'Supervise todas las etapas: caja → bodega → repartidor. Solo el administrador y bodega pueden cambiar de repartidor.', `<div class="row" style="margin-bottom:10px"><select data-act="filtroPed" style="max-width:240px">${LF.opciones([['pendiente', 'Esperando a caja'], ['confirmado', 'En bodega'], ['preparado', 'Listos para reparto'], ['en_camino', 'En camino'], ['entregada', 'Entregados'], ['no_entregado', 'No entregados'], ['pagada', 'Pagadas (mostrador)']], LF.filtroPed, 'Todos los estados')}</select></div>
   ${LF.tabla([{ t: '#', f: v => v.id }, { t: 'Fecha', f: v => LF.fecha(v.created_at) }, { t: 'Tipo', f: v => LF.esc(v.tipo_venta) + (v.canal === 'whatsapp' ? ' 💬' : '') }, { t: 'Cliente', f: v => LF.esc(v.cliente || '—') }, { t: 'Total', cls: 'num', f: v => LF.bs(v.total) },
-   { t: 'Estado', f: v => LF.badge(v.estado) }, { t: 'Pago', f: v => LF.badge(v.estado_pago) },
-   { t: 'Repartidor', f: v => v.tipo_venta === 'delivery' && ['pendiente', 'en_camino'].includes(v.estado) ? `<select data-act="asignar" data-id="${v.id}" style="min-width:150px">${LF.opciones(LF.reps.map(r => [r.id, r.nombre + ' ' + r.apellido]), v.repartidor_id, 'Sin asignar')}</select>` : LF.esc(v.repartidor || '—') }], d.items)}`);
+   { t: 'Estado', f: v => LF.badgeEstado(v.estado) }, { t: 'Pago', f: v => (v.tipo_venta === 'delivery' ? `<small>${LF.esc((v.metodo_pago || '').toUpperCase())}</small> ` : '') + LF.badge(v.estado_pago) }, { t: 'Acción', f: acciones },
+   { t: 'Repartidor', f: v => v.tipo_venta === 'delivery' && ['confirmado', 'preparado', 'en_camino'].includes(v.estado) ? LF.selectorRepartidor(v, LF.reps) : LF.esc(v.repartidor || '—') }], d.items)}`);
 };
 LF.acc.filtroPed = el => { LF.filtroPed = el.value; return LF.render(true); };
-LF.acc.asignar = async el => { if (!el.value) return; await LF.put('/pedidos/' + el.dataset.id + '/asignacion', { repartidor_id: +el.value }); LF.toast('Pedido asignado', 'ok'); };
+LF.acc.asignar = async el => { if (!el.value) return; await LF.put('/pedidos/' + el.dataset.id + '/asignacion', { repartidor_id: +el.value }); LF.toast('Repartidor cambiado', 'ok'); return LF.render(true); };
 
 // ---- Cobranzas y cajas ----
 LF.rutas['/cobranzas'] = async () => {

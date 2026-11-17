@@ -8,7 +8,7 @@ from ...core.errors import AppError, conflicto, invalido, no_encontrado, no_aute
 from ...core.events import bus
 from ...core import validators as v
 from ..ecommerce.facade import EcommerceFacade as ECO
-from .adapter import QrSasAdapter
+from .adapter import PayPalAdapter, QrSasAdapter
 from .repository import PagoRepository as R, CajaRepository as C, ComprobanteRepository as K
 from .strategies import ESTRATEGIAS
 
@@ -128,15 +128,29 @@ class PagoService:
         return ESTRATEGIAS['qr'].iniciar(cur, venta['id'], venta['total'])
 
     @staticmethod
+    def _paypal_en_tx(cur, venta, base_url):
+        """Devuelve la orden PayPal vigente de la venta o crea una nueva. Anula otros cobros pendientes (QR) para no cobrar dos veces."""
+        existente = None
+        for p in R.de_venta(cur, venta['id'], lock=True):
+            if p['estado'] == 'confirmado':
+                raise conflicto('VENTA_YA_PAGADA', 'La venta ya fue pagada')
+            if p['estado'] == 'pendiente':
+                if p['metodo'] == 'paypal' and not existente:
+                    existente = p['id']
+                else:
+                    R.actualizar(cur, p['id'], {'estado': 'anulado', 'motivo_anulacion': 'Reemplazado por otro método de pago'})
+        return existente or ESTRATEGIAS['paypal'].iniciar(cur, venta['id'], venta['total'], base_url)
+
+    @staticmethod
     def _cobrable(venta):
-        if venta['estado_pago'] != 'pendiente' or venta['estado'] not in ('pendiente', 'en_camino'):
+        if venta['estado_pago'] != 'pendiente' or venta['estado'] not in ('pendiente', 'confirmado', 'preparado', 'en_camino'):
             raise conflicto('VENTA_NO_COBRABLE', 'La venta no está pendiente de cobro')
 
     @staticmethod
-    def iniciar(user, d):
+    def iniciar(user, d, base_url=''):
         venta_id, metodo = v.entero(d, 'venta_id', 1), d.get('metodo')
         if metodo not in ESTRATEGIAS:
-            raise invalido('El método debe ser «efectivo» o «qr»')
+            raise invalido('El método debe ser «efectivo», «qr» o «paypal»')
         with transaction() as cur:
             venta = ECO.bloquear_venta(cur, venta_id)
             if not venta:
@@ -144,15 +158,21 @@ class PagoService:
             if user['rol'] == 'cliente':
                 if venta['usuario_id'] != user['id'] or venta['tipo_venta'] != 'delivery':
                     raise no_encontrado('Venta no encontrada')
-                if metodo != 'qr':
-                    raise prohibido('El cliente solo puede pagar por QR; el efectivo se cobra contra entrega')
+                if metodo not in ('qr', 'paypal'):
+                    raise prohibido('El cliente paga en línea por QR o PayPal; el efectivo se cobra contra entrega')
             elif user['rol'] == 'cajero':
                 if venta['tipo_venta'] != 'mostrador' or venta['cajero_id'] != user['id']:
                     raise prohibido('Solo puede cobrar ventas de su propio mostrador')
+                if metodo == 'paypal':
+                    raise prohibido('PayPal es solo para pedidos online del cliente')
             else:
                 raise prohibido()
             PagoService._cobrable(venta)
-            if metodo == 'qr':
+            if user['rol'] == 'cliente':
+                ECO.actualizar_venta(cur, venta_id, {'metodo_pago': metodo})
+            if metodo == 'paypal':
+                pid = PagoService._paypal_en_tx(cur, venta, base_url)
+            elif metodo == 'qr':
                 pid = PagoService._qr_en_tx(cur, venta)
             else:
                 caja = C.abierta(cur, user['id'])
@@ -235,6 +255,32 @@ class PagoService:
         return {'ok': True, 'pago_id': pid}
 
     @staticmethod
+    def confirmar_paypal(orden_id, venta_id=None):
+        """Retorno de PayPal: el cliente aprobó el pago; se captura la orden y se confirma. Idempotente."""
+        with read() as cur:
+            p = R.por_referencia(cur, orden_id) if orden_id else None
+        if not p or p['metodo'] != 'paypal':
+            raise no_encontrado('Orden de PayPal desconocida')
+        if p['estado'] == 'confirmado':
+            return {'ok': True, 'idempotente': True, 'pago_id': p['id'], 'venta_id': p['venta_id']}
+        if p['estado'] != 'pendiente':
+            raise conflicto('PAGO_FUERA_DE_PLAZO', 'Esta orden de PayPal ya no está vigente')
+        cap = PayPalAdapter.capturar(orden_id, p['monto'])
+        if not cap['ok']:
+            bus.publish('PagoRechazado', usuario_id=None, entidad='pago', entidad_id=p['id'], detalle={'estado': cap.get('estado')})
+            raise conflicto('PAGO_NO_COMPLETADO', 'PayPal no completó el pago. Intente de nuevo o pague en efectivo.')
+        with transaction() as cur:
+            p = R.por_referencia(cur, orden_id, lock=True)
+            if p['estado'] == 'confirmado':
+                return {'ok': True, 'idempotente': True, 'pago_id': p['id'], 'venta_id': p['venta_id']}
+            R.marcar_confirmado(cur, p['id'], cap['tx'])
+            ComprobanteService.emitir(cur, p['venta_id'])
+            ECO.marcar_pagada(cur, p['venta_id'])
+            pid, vid = p['id'], p['venta_id']
+        bus.publish('PagoConfirmado', usuario_id=None, entidad='pago', entidad_id=pid, venta_id=vid, detalle={'metodo': 'paypal', 'tx': cap['tx']})
+        return {'ok': True, 'pago_id': pid, 'venta_id': vid}
+
+    @staticmethod
     def simular_pago(user, referencia):
         """Solo QR_MODO=simulado: reproduce lo que haría el banco (cuerpo firmado con el secreto)."""
         if Config.QR_MODO != 'simulado':
@@ -246,6 +292,8 @@ class PagoService:
             venta = ECO.venta(cur, p['venta_id'])
         if user['rol'] == 'cliente' and venta['usuario_id'] != user['id']:
             raise no_encontrado('Referencia desconocida')
+        if p['metodo'] == 'paypal':
+            return PagoService.confirmar_paypal(referencia)
         cuerpo = json.dumps({'referencia': referencia, 'monto': str(p['monto']), 'estado': 'PAGADO', 'id_transaccion': 'SIM-' + uuid.uuid4().hex[:10]}).encode()
         return PagoService.confirmar_qr(cuerpo, QrSasAdapter.firmar(cuerpo))
 

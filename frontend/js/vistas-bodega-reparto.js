@@ -27,43 +27,41 @@ LF.rutas['/movimientos'] = async () => {
 // ---------------- Repartidor ----------------
 LF.rutas['/entregas'] = async () => {
   const e = await LF.get('/entregas');
-  return LF.pagina('Mis entregas', 'Pedidos por entregar. Notifique y confirme el resultado de cada uno.', e.length ? `<div class="grid g2">${e.map(p => {
-    const telLimpio = String(p.telefono_contacto || '').replace(/\D/g, '');
-    const telWa = telLimpio.length === 8 ? '591' + telLimpio : telLimpio;
+  const admin = LF.user && LF.user.rol === 'administrador';
+  if (!admin) LF.gpsSincronizar(e.filter(p => p.estado === 'en_camino').map(p => p.id));
+  return LF.pagina('Mis entregas', admin ? 'Vista general de pedidos liberados por bodega.' : 'Pedidos que bodega le asignó. Salga a entregar, avise su llegada y confirme el resultado.', (e.some(p => p.estado === 'en_camino') && !admin ? '<div id="gpsEstado" class="note ok">📡 Compartiendo su ubicación con el cliente…</div>' : '') + (e.length ? `<div class="grid g2">${e.map(p => {
+    const telWa = LF.telWa(p.telefono_contacto);
     const enLugar = p.observacion_entrega === 'Repartidor en el lugar de entrega';
-    return `<div class="card"><div class="row"><b>Pedido #${p.id}</b>${LF.badge(p.estado)}<span class="sp"></span>${p.a_cobrar > 0 ? `<b style="color:var(--dis)">Cobrar ${LF.bs(p.a_cobrar)}</b>` : '<span class="badge b-ok">Ya pagado</span>'}</div>
+    const dest = p.lat_entrega != null ? `${p.lat_entrega},${p.lng_entrega}` : encodeURIComponent(p.direccion_entrega + ', ' + LF.CIUDAD);
+    return `<div class="card"><div class="row"><b>Pedido #${p.id}</b>${LF.badgeEstado(p.estado)}<span class="sp"></span>${p.a_cobrar > 0 ? `<b style="color:var(--dis)">Cobrar ${LF.bs(p.a_cobrar)}</b>` : '<span class="badge b-ok">Ya pagado</span>'}</div>
     <dl class="kv" style="margin-top:8px">
       <dt>Cliente</dt><dd>${LF.esc(p.cliente)}</dd>
       <dt>Dirección</dt><dd><b>${LF.esc(p.direccion_entrega)}</b> ${LF.esc(p.referencia_entrega || '')}</dd>
-      <dt>Teléfono</dt><dd>
-        <a href="tel:${LF.esc(p.telefono_contacto)}">${LF.esc(p.telefono_contacto)}</a>
-        ${telWa ? `<a href="https://wa.me/${telWa}" target="_blank" class="badge" style="background:#25D366;color:#fff;margin-left:6px;text-decoration:none">💬 Chat WhatsApp</a>` : ''}
-      </dd>
+      <dt>Teléfono</dt><dd><a href="tel:${LF.esc(p.telefono_contacto)}">${LF.esc(p.telefono_contacto)}</a>
+        ${telWa ? `<a href="https://wa.me/${telWa}" target="_blank" class="badge" style="background:#25D366;color:#fff;margin-left:6px;text-decoration:none">💬 WhatsApp</a>` : ''}</dd>
+      <dt>Pago</dt><dd>${LF.METODOS[p.metodo_pago] || ''}</dd>
       <dt>Total</dt><dd>${LF.bs(p.total)}</dd>
       ${enLugar ? `<dt>Ubicación</dt><dd><span class="badge b-ok">📍 Cliente avisado: en el lugar</span></dd>` : ''}
     </dl>
     <div class="row" style="margin-top:10px">
-      ${p.estado === 'pendiente' ? `<button class="btn sm warn" data-act="enCamino" data-id="${p.id}">🛵 Salí a entregar (Avisar)</button>` : ''}
-      ${p.estado === 'en_camino' && !enLugar ? `<button class="btn sm" style="background:#2563eb;color:#fff" data-act="enDestino" data-id="${p.id}">📍 Llegué a la ubicación (Avisar)</button>` : ''}
-      <button class="btn sm ok" data-act="cerrarEntrega" data-id="${p.id}" data-accion="entregado">✅ Entregado</button>
-      <button class="btn sm bad" data-act="cerrarEntrega" data-id="${p.id}" data-accion="no_entregado">❌ No entregado</button>
+      <a class="btn sm sec" target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${dest}">🧭 Cómo llegar</a>
+      ${admin ? '' : `${p.estado === 'preparado' ? `<button class="btn sm warn" data-act="enCamino" data-id="${p.id}">🛵 Salí a entregar</button>` : ''}
+      ${p.estado === 'en_camino' && !enLugar ? `<button class="btn sm" style="background:#2563eb;color:#fff" data-act="enDestino" data-id="${p.id}">📍 Llegué</button>` : ''}
+      ${p.estado === 'en_camino' ? `<button class="btn sm ok" data-act="cerrarEntrega" data-id="${p.id}" data-accion="entregado">✅ Entregado</button>` : ''}
+      <button class="btn sm bad" data-act="cerrarEntrega" data-id="${p.id}" data-accion="no_entregado">❌ No entregado</button>`}
     </div></div>`;
-  }).join('')}</div>` : '<div class="card empty">No tiene entregas pendientes 🎉</div>');
+  }).join('')}</div>` : '<div class="card empty">No tiene entregas pendientes 🎉</div>'));
 };
 LF.acc.enCamino = async el => {
   const r = await LF.put('/entregas/' + el.dataset.id + '/en-camino');
-  LF.toast('Pedido en camino; WhatsApp preparado para el cliente', 'ok');
-  if (r.whatsapp_url) {
-    window.open(r.whatsapp_url, '_blank');
-  }
+  LF.toast('Pedido en camino: el cliente ya puede verlo en el mapa', 'ok');
+  if (r.whatsapp_url) window.open(r.whatsapp_url, '_blank');
   return LF.render(true);
 };
 LF.acc.enDestino = async el => {
   const r = await LF.put('/entregas/' + el.dataset.id + '/en-destino');
-  LF.toast('Aviso de llegada enviado al cliente por WhatsApp', 'ok');
-  if (r.whatsapp_url) {
-    window.open(r.whatsapp_url, '_blank');
-  }
+  LF.toast('Aviso de llegada enviado al cliente', 'ok');
+  if (r.whatsapp_url) window.open(r.whatsapp_url, '_blank');
   return LF.render(true);
 };
 LF.acc.cerrarEntrega = el => LF.modal(`<h2>${el.dataset.accion === 'entregado' ? 'Confirmar entrega' : 'Marcar como no entregado'} · #${el.dataset.id}</h2>
@@ -74,5 +72,5 @@ LF.acc.enviarCierre = async el => { const r = await LF.put('/entregas/' + el.dat
 LF.rutas['/historial'] = async () => {
   const h = await LF.get('/entregas/historial');
   return LF.pagina('Historial de entregas', '', LF.tabla([{ t: '#', f: p => p.id }, { t: 'Fecha', f: p => LF.fecha(p.fecha_entrega) }, { t: 'Cliente', f: p => LF.esc(p.cliente) }, { t: 'Dirección', f: p => LF.esc(p.direccion_entrega) },
-    { t: 'Resultado', f: p => LF.badge(p.estado) }, { t: 'Cobrado', cls: 'num', f: p => p.estado === 'entregada' ? LF.bs(p.total) : '—' }, { t: 'Observación', f: p => LF.esc(p.observacion_entrega || '') }], h, 'Aún no tiene entregas.'));
+    { t: 'Resultado', f: p => LF.badgeEstado(p.estado) }, { t: 'Cobrado', cls: 'num', f: p => p.estado === 'entregada' ? LF.bs(p.total) : '—' }, { t: 'Observación', f: p => LF.esc(p.observacion_entrega || '') }], h, 'Aún no tiene entregas.'));
 };

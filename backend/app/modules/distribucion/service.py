@@ -27,6 +27,74 @@ class EntregaService:
         return [_num(f) for f in filas]
 
     @staticmethod
+    def online(user):
+        """Bandeja de pedidos online abiertos, con sus productos (para que bodega sepa qué alistar)."""
+        from ..ecommerce.service import PedidoService
+        PedidoService.cancelar_vencidos()
+        with read() as cur:
+            filas = [_num(f) for f in E.online(cur)]
+            for f in filas:
+                f['items'] = [_num(i) for i in ECO.detalle(cur, f['id'])]
+        return filas
+
+    @staticmethod
+    def repartidores(user):
+        with read() as cur:
+            return [_num(r) for r in E.cargas(cur)]
+
+    # ---- Etapa 1: caja ----
+    @staticmethod
+    def confirmar(user, vid):
+        """El cajero revisa el pedido (y su pago si fue QR/PayPal) y lo envía a bodega."""
+        with transaction() as cur:
+            venta = EntregaService._delivery_abierto(cur, vid)
+            EstadoPedido.validar(venta['estado'], 'confirmado')
+            if venta['metodo_pago'] in ('qr', 'paypal') and venta['estado_pago'] != 'pagado':
+                raise conflicto('PAGO_PENDIENTE', f"El cliente eligió pagar con {venta['metodo_pago'].upper()} y todavía no pagó. Espere la confirmación del pago o rechace el pedido.")
+            ECO.actualizar_venta(cur, vid, {'estado': 'confirmado', 'confirmado_en': datetime.datetime.now(), 'confirmado_por': user['id']})
+        bus.publish('PedidoConfirmado', usuario_id=user['id'], entidad='venta', entidad_id=vid, detalle=None)
+        return {'mensaje': 'Pedido confirmado y enviado a bodega', 'estado': 'confirmado'}
+
+    @staticmethod
+    def rechazar(user, vid, d):
+        motivo = v.texto(d, 'motivo', max_len=200)
+        with transaction() as cur:
+            venta = EntregaService._delivery_abierto(cur, vid)
+            if venta['estado'] not in ('pendiente', 'confirmado', 'preparado'):
+                raise conflicto('ETAPA_INVALIDA', 'Solo se puede rechazar un pedido que aún no salió a reparto')
+            pagado = venta['estado_pago'] == 'pagado'
+            PagosFacade.anular_pagos_de_venta(cur, vid, 'Pedido rechazado: ' + motivo)
+            ECO.cancelar_venta(cur, vid, 'Rechazado: ' + motivo, user['id'])
+        bus.publish('PedidoRechazado', usuario_id=user['id'], entidad='venta', entidad_id=vid, detalle={'motivo': motivo})
+        r = {'mensaje': 'Pedido rechazado; el stock volvió al inventario'}
+        if pagado:
+            r['requiere_reembolso'] = True
+            r['mensaje'] += '. El cliente ya había pagado: realice el reembolso.'
+        return r
+
+    # ---- Etapa 2: bodega ----
+    @staticmethod
+    def preparar(user, vid):
+        """Bodega alista y libera el pedido; el sistema lo asigna al repartidor con menos carga."""
+        with transaction() as cur:
+            venta = EntregaService._delivery_abierto(cur, vid)
+            EstadoPedido.validar(venta['estado'], 'preparado')
+            rep_id = venta['repartidor_id']
+            if rep_id:                                 # el administrador ya lo había asignado a mano
+                rep = U.por_id(cur, rep_id)
+                rep_nombre = f"{rep['nombre']} {rep['apellido']}" if rep else ''
+            else:
+                rep = E.repartidor_menos_cargado(cur)
+                if not rep:
+                    raise conflicto('SIN_REPARTIDORES', 'No hay repartidores activos. Cree o active un repartidor para liberar el pedido.')
+                rep_id, rep_nombre = rep['id'], rep['nombre']
+            ECO.actualizar_venta(cur, vid, {'estado': 'preparado', 'repartidor_id': rep_id, 'preparado_en': datetime.datetime.now(), 'preparado_por': user['id']})
+            ab = E.abierta(cur, vid)
+            E.reasignar(cur, ab['id'], rep_id) if ab else E.insertar(cur, vid, rep_id)
+        bus.publish('PedidoPreparado', usuario_id=user['id'], entidad='venta', entidad_id=vid, detalle={'repartidor_id': rep_id})
+        return {'mensaje': f'Pedido preparado y asignado a {rep_nombre}', 'estado': 'preparado', 'repartidor_id': rep_id, 'repartidor': rep_nombre}
+
+    @staticmethod
     def historial(user):
         with read() as cur:
             filas = E.historial(cur, user['id'] if user['rol'] == 'repartidor' else None)
@@ -44,8 +112,8 @@ class EntregaService:
         rep_id = v.entero(d, 'repartidor_id', 1)
         with transaction() as cur:
             venta = EntregaService._delivery_abierto(cur, vid)
-            if venta['estado'] not in ('pendiente', 'en_camino'):
-                raise conflicto('PEDIDO_YA_PROCESADO', 'El pedido ya fue procesado')
+            if venta['estado'] not in ('confirmado', 'preparado', 'en_camino'):
+                raise conflicto('ETAPA_INVALIDA', 'Solo se puede cambiar el repartidor de un pedido confirmado, preparado o en camino')
             rep = U.por_id(cur, rep_id)
             if not rep or rep['rol'] != 'repartidor' or not rep['activo']:
                 raise invalido('El usuario indicado no es un repartidor activo')
@@ -59,10 +127,10 @@ class EntregaService:
     def en_camino(user, vid):
         with transaction() as cur:
             venta = EntregaService._delivery_abierto(cur, vid)
-            if venta['repartidor_id'] not in (None, user['id']):
-                raise prohibido('El pedido está asignado a otro repartidor')
+            if venta['repartidor_id'] != user['id']:
+                raise prohibido('El pedido no está asignado a usted')
             EstadoPedido.validar(venta['estado'], 'en_camino')
-            ECO.actualizar_venta(cur, vid, {'estado': 'en_camino', 'repartidor_id': user['id']})
+            ECO.actualizar_venta(cur, vid, {'estado': 'en_camino'})
             ab = E.abierta(cur, vid)
             E.reasignar(cur, ab['id'], user['id']) if ab else E.insertar(cur, vid, user['id'])
             items = [_num(i) for i in ECO.detalle(cur, vid)]
@@ -83,8 +151,8 @@ class EntregaService:
     def en_destino(user, vid):
         with transaction() as cur:
             venta = EntregaService._delivery_abierto(cur, vid)
-            if venta['repartidor_id'] not in (None, user['id']):
-                raise prohibido('El pedido está asignado a otro repartidor')
+            if venta['repartidor_id'] != user['id']:
+                raise prohibido('El pedido no está asignado a usted')
             if venta['estado'] != 'en_camino':
                 raise conflicto('ESTADO_INVALIDO', 'El pedido debe estar en camino para marcar que llegó al lugar')
             ECO.actualizar_venta(cur, vid, {'observacion_entrega': 'Repartidor en el lugar de entrega'})
@@ -109,8 +177,8 @@ class EntregaService:
         with transaction() as cur:
             venta = EntregaService._delivery_abierto(cur, vid)
             EstadoPedido.validar(venta['estado'], 'entregada' if accion == 'entregado' else 'no_entregado')   # 409 si ya fue procesado
-            if venta['repartidor_id'] not in (None, user['id']):
-                raise prohibido('El pedido está asignado a otro repartidor')
+            if venta['repartidor_id'] != user['id']:
+                raise prohibido('El pedido no está asignado a usted')
             ahora = datetime.datetime.now()
             if accion == 'entregado':
                 if venta['estado_pago'] != 'pagado':
@@ -132,6 +200,13 @@ class EntregaService:
         evento = 'PedidoEntregado' if accion == 'entregado' else 'PedidoNoEntregado'
         bus.publish(evento, usuario_id=user['id'], entidad='venta', entidad_id=vid, telefono=venta['telefono_contacto'], detalle={'observacion': campos['observacion_entrega']})
         resultado['estado'] = campos['estado']
+        if accion == 'entregado' and venta.get('usuario_id'):
+            try:                                              # premio por cliente frecuente / antigüedad; nunca debe romper la entrega
+                from ..ecommerce.cupones import CuponService
+                nuevos = CuponService.evaluar_recompensas(venta['usuario_id'])
+                if nuevos: resultado['recompensa_cliente'] = nuevos
+            except Exception:
+                import logging; logging.getLogger(__name__).exception('No se pudo evaluar la recompensa')
         return resultado
 
     @staticmethod
@@ -162,7 +237,8 @@ class EntregaService:
             if not venta or venta['tipo_venta'] != 'delivery' or (user['rol'] == 'cliente' and venta['usuario_id'] != user['id']):
                 raise no_encontrado('Pedido no encontrado')
             pos = UB.de_venta(cur, vid) if venta['estado'] == 'en_camino' else None
-        out = {'venta_id': vid, 'estado': venta['estado'], 'repartidor': venta.get('repartidor'), 'direccion_entrega': venta['direccion_entrega'], 'disponible': pos is not None}
+        out = {'venta_id': vid, 'estado': venta['estado'], 'repartidor': venta.get('repartidor'), 'direccion_entrega': venta['direccion_entrega'], 'destino_lat': float(venta['lat_entrega']) if venta.get('lat_entrega') is not None else None,
+               'destino_lng': float(venta['lng_entrega']) if venta.get('lng_entrega') is not None else None, 'disponible': pos is not None}
         if pos:
             out.update(lat=float(pos['lat']), lng=float(pos['lng']), actualizado=pos['actualizado'], hace_seg=int(pos['hace_seg'] or 0))
         return out
@@ -175,14 +251,24 @@ class EntregaService:
                 raise no_encontrado('Pedido no encontrado')
             etapas = E.historial_venta(cur, vid)
         linea = [{'evento': 'Pedido recibido', 'fecha': venta['created_at']}]
+        if venta.get('confirmado_en'):
+            linea.append({'evento': 'Confirmado por caja', 'fecha': venta['confirmado_en']})
+        if venta.get('preparado_en'):
+            linea.append({'evento': 'Preparado en bodega', 'fecha': venta['preparado_en']})
         for e in etapas:
             linea.append({'evento': f"Asignado a {e['repartidor']}", 'fecha': e['asignada_en']})
             if e['cerrada_en']:
                 linea.append({'evento': 'Entregado' if e['resultado'] == 'entregado' else 'No se pudo entregar', 'fecha': e['cerrada_en'], 'detalle': e['observacion']})
+        if venta['estado'] == 'pendiente':
+            linea.append({'evento': '⏳ Esperando la confirmación de caja', 'fecha': None})
+        elif venta['estado'] == 'confirmado':
+            linea.append({'evento': '📦 Bodega está preparando su pedido', 'fecha': None})
+        elif venta['estado'] == 'preparado':
+            linea.append({'evento': '✅ Listo: el repartidor saldrá en breve', 'fecha': None})
         if venta['estado'] == 'en_camino':
             if venta.get('observacion_entrega') == 'Repartidor en el lugar de entrega':
                 linea.append({'evento': '📍 ¡El repartidor ya llegó a su ubicación!', 'fecha': None})
             else:
                 linea.append({'evento': '🛵 En camino hacia su dirección', 'fecha': None})
-        return {'id': vid, 'estado': venta['estado'], 'estado_pago': venta['estado_pago'], 'repartidor': venta['repartidor'], 'total': float(venta['total']),
+        return {'id': vid, 'estado': venta['estado'], 'estado_pago': venta['estado_pago'], 'metodo_pago': venta['metodo_pago'], 'repartidor': venta['repartidor'], 'total': float(venta['total']),
                 'direccion_entrega': venta['direccion_entrega'], 'linea_tiempo': linea}

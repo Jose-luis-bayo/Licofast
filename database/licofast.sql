@@ -60,6 +60,39 @@ CREATE TABLE IF NOT EXISTS promociones (
  FOREIGN KEY (categoria_id) REFERENCES categorias(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
+CREATE TABLE IF NOT EXISTS cupones (
+ id INT AUTO_INCREMENT PRIMARY KEY,
+ codigo VARCHAR(30) NOT NULL UNIQUE,
+ descripcion VARCHAR(160) NULL,
+ tipo ENUM('porcentaje','monto') NOT NULL,
+ valor DECIMAL(10,2) NOT NULL,
+ minimo_compra DECIMAL(10,2) NOT NULL DEFAULT 0,
+ usos_max INT NULL,
+ usos_por_cliente INT NOT NULL DEFAULT 1,
+ usuario_id INT NULL,
+ vigente_desde DATETIME NULL,
+ vigente_hasta DATETIME NULL,
+ activo TINYINT(1) NOT NULL DEFAULT 1,
+ origen ENUM('manual','recompensa') NOT NULL DEFAULT 'manual',
+ regla VARCHAR(20) NULL,
+ periodo VARCHAR(12) NULL,
+ creado_por INT NULL,
+ created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+ UNIQUE KEY uq_recompensa (usuario_id, regla, periodo),
+ KEY ix_cupon_usuario (usuario_id)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS cupon_usos (
+ id INT AUTO_INCREMENT PRIMARY KEY,
+ cupon_id INT NOT NULL,
+ usuario_id INT NOT NULL,
+ venta_id INT NOT NULL,
+ descuento DECIMAL(10,2) NOT NULL,
+ created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+ KEY ix_uso_cupon (cupon_id), KEY ix_uso_venta (venta_id),
+ FOREIGN KEY (cupon_id) REFERENCES cupones(id)
+) ENGINE=InnoDB;
+
 CREATE TABLE IF NOT EXISTS ventas (
  id INT AUTO_INCREMENT PRIMARY KEY,
  usuario_id INT NULL,
@@ -70,13 +103,21 @@ CREATE TABLE IF NOT EXISTS ventas (
  total DECIMAL(10,2) NOT NULL DEFAULT 0,
  descuento DECIMAL(10,2) NOT NULL DEFAULT 0,
  monto_cobrado DECIMAL(10,2) NOT NULL DEFAULT 0,
- estado ENUM('pendiente','pagada','en_camino','entregada','no_entregado') NOT NULL DEFAULT 'pendiente',
+ estado ENUM('pendiente','pagada','en_camino','entregada','no_entregado','confirmado','preparado') NOT NULL DEFAULT 'pendiente',
  estado_pago ENUM('pendiente','pagado','anulado') NOT NULL DEFAULT 'pendiente',
  direccion_entrega VARCHAR(255) NULL,
  referencia_entrega VARCHAR(255) NULL,
  telefono_contacto VARCHAR(30) NULL,
  observacion_entrega VARCHAR(255) NULL,
  fecha_entrega DATETIME NULL,
+ lat_entrega DECIMAL(9,6) NULL,
+ lng_entrega DECIMAL(9,6) NULL,
+ metodo_pago VARCHAR(10) NOT NULL DEFAULT 'efectivo',
+ confirmado_en DATETIME NULL,
+ confirmado_por INT NULL,
+ preparado_en DATETIME NULL,
+ preparado_por INT NULL,
+ cupon_codigo VARCHAR(30) NULL,
  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
  KEY ix_ventas_estado (estado, estado_pago),
  KEY ix_ventas_usuario (usuario_id),
@@ -123,7 +164,7 @@ CREATE TABLE IF NOT EXISTS cajas (
 CREATE TABLE IF NOT EXISTS pagos (
  id INT AUTO_INCREMENT PRIMARY KEY,
  venta_id INT NOT NULL,
- metodo ENUM('efectivo','qr') NOT NULL,
+ metodo ENUM('efectivo','qr','paypal') NOT NULL,
  monto DECIMAL(10,2) NOT NULL,
  estado ENUM('pendiente','confirmado','vencido','anulado') NOT NULL,
  referencia VARCHAR(60) NULL UNIQUE,

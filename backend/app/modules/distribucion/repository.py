@@ -2,19 +2,44 @@
 from ...db import one, all_, run
 
 BASE = ("SELECT v.id,v.total,v.estado,v.estado_pago,IF(v.estado_pago='pagado',0,v.total) AS a_cobrar,v.direccion_entrega,v.referencia_entrega,v.telefono_contacto,"
-        "v.observacion_entrega,v.fecha_entrega,v.created_at,v.repartidor_id,v.canal,CONCAT(c.nombre,' ',c.apellido) AS cliente,CONCAT(r.nombre,' ',r.apellido) AS repartidor "
+        "v.observacion_entrega,v.fecha_entrega,v.created_at,v.repartidor_id,v.canal,v.lat_entrega,v.lng_entrega,v.metodo_pago,v.confirmado_en,v.preparado_en,"
+        "CONCAT(c.nombre,' ',c.apellido) AS cliente,CONCAT(r.nombre,' ',r.apellido) AS repartidor "
         "FROM ventas v LEFT JOIN usuarios c ON c.id=v.usuario_id LEFT JOIN usuarios r ON r.id=v.repartidor_id WHERE v.tipo_venta='delivery' AND ")
 
 
 class EntregaRepository:
     @staticmethod
     def abiertas_para(cur, repartidor_id=None, estado=None):
-        w, a = "v.estado IN ('pendiente','en_camino')", []
-        if estado in ('pendiente', 'en_camino'):
-            w, a = 'v.estado=%s', [estado]
+        """Repartidor: solo sus pedidos ya liberados por bodega. Administrador: todos los abiertos."""
         if repartidor_id:
-            w += ' AND (v.repartidor_id IS NULL OR v.repartidor_id=%s)'; a.append(repartidor_id)
+            w, a = "v.estado IN ('preparado','en_camino') AND v.repartidor_id=%s", [repartidor_id]
+            if estado in ('preparado', 'en_camino'):
+                w, a = 'v.estado=%s AND v.repartidor_id=%s', [estado, repartidor_id]
+            return all_(cur, BASE + w + ' ORDER BY v.id', a)
+        w, a = "v.estado IN ('pendiente','confirmado','preparado','en_camino')", []
+        if estado in ('pendiente', 'confirmado', 'preparado', 'en_camino'):
+            w, a = 'v.estado=%s', [estado]
         return all_(cur, BASE + w + ' ORDER BY v.id', a)
+
+    @staticmethod
+    def online(cur, limite=150):
+        """Pedidos online abiertos (cajero y bodega los trabajan por etapas)."""
+        return all_(cur, BASE + "v.estado IN ('pendiente','confirmado','preparado','en_camino') ORDER BY v.id LIMIT %s", (limite,))
+
+    @staticmethod
+    def repartidor_menos_cargado(cur):
+        """Reparto equitativo: quien tiene menos pedidos abiertos; si empatan, quien lleva más tiempo sin recibir uno."""
+        return one(cur, "SELECT u.id, CONCAT(u.nombre,' ',u.apellido) AS nombre, "
+                        "(SELECT COUNT(*) FROM ventas v WHERE v.repartidor_id=u.id AND v.estado IN ('preparado','en_camino')) AS carga, "
+                        "(SELECT MAX(e.asignada_en) FROM entregas e WHERE e.repartidor_id=u.id) AS ultima "
+                        "FROM usuarios u WHERE u.rol='repartidor' AND u.activo=1 ORDER BY carga, (ultima IS NOT NULL), ultima, u.id LIMIT 1")
+
+    @staticmethod
+    def cargas(cur):
+        return all_(cur, "SELECT u.id, CONCAT(u.nombre,' ',u.apellido) AS nombre, u.telefono, "
+                         "(SELECT COUNT(*) FROM ventas v WHERE v.repartidor_id=u.id AND v.estado='preparado') AS por_salir, "
+                         "(SELECT COUNT(*) FROM ventas v WHERE v.repartidor_id=u.id AND v.estado='en_camino') AS en_camino "
+                         "FROM usuarios u WHERE u.rol='repartidor' AND u.activo=1 ORDER BY u.id")
 
     @staticmethod
     def historial(cur, repartidor_id=None, limit=100):

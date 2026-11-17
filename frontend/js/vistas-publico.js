@@ -170,17 +170,41 @@ LF.rutas['/carrito'] = async () => {
   if (!LF.carrito.length) return LF.pagina('Mi carrito', '', '<div class="card empty">Su carrito está vacío. <a href="#/">Ver catálogo</a></div>');
   const c = await LF.post('/carrito/cotizar', { items: LF.carrito.map(l => ({ producto_id: l.id, cantidad: l.cantidad })) });
   const u = LF.user;
+  const mis = u && u.rol === 'cliente' ? await LF.get('/mis-cupones').catch(() => []) : [];
+  LF.cupon = null; LF._totalBase = c.total;
   return LF.pagina('Mi carrito', 'Revise su pedido y confirme la entrega.', `<div class="split"><div>${LF.tabla([
     { t: 'Producto', f: l => LF.esc(l.nombre) + (l.promocion ? ` <span class="badge b-ok">${LF.esc(l.promocion)}</span>` : '') + (l.stock_suficiente ? '' : ' <span class="badge b-bad">stock insuficiente</span>') },
     { t: 'Cantidad', f: l => `<span class="qty"><button data-act="menos" data-id="${l.producto_id}">−</button>${l.cantidad}<button data-act="mas" data-id="${l.producto_id}">+</button></span>` },
     { t: 'Subtotal', cls: 'num', f: l => LF.bs(l.subtotal) }, { t: '', f: l => `<button class="btn sm bad" data-act="quitar" data-id="${l.producto_id}">✕</button>` }], c.lineas)}</div>
     <div class="card"><h3>Resumen</h3>${c.descuento > 0 ? `<div class="row"><span>Descuento</span><span class="sp"></span><b>− ${LF.bs(c.descuento)}</b></div>` : ''}
-    <div class="ticket"><div class="tot"><span>Total</span><span>${LF.bs(c.total)}</span></div></div>
-    ${u && u.rol === 'cliente' ? `<form id="fc"><h3>Datos de entrega</h3>${LF.campo('direccion_entrega', 'Dirección', 'text', '', 'required')}${LF.campo('referencia_entrega', 'Referencia (opcional)')}${LF.campo('telefono_contacto', 'Teléfono de contacto', 'tel', u.telefono || '', 'required')}
-      <label><input type="checkbox" id="mayor" style="width:auto"> Declaro ser mayor de 18 años</label>
+    <div id="cuponLinea"></div>
+    <div class="ticket"><div class="tot"><span>Total</span><span id="totalFinal">${LF.bs(c.total)}</span></div></div>
+    ${u && u.rol === 'cliente' ? `<form id="fc"><h3>Datos de entrega</h3>${LF.campo('direccion_entrega', 'Dirección', 'text', '', 'required')}
+      <div class="row" style="margin:8px 0 2px"><button type="button" class="btn sm sec" data-act="usarUbicacion">📍 Usar mi ubicación actual</button><span id="ubicEstado" class="sub" style="margin:0">${LF.ubic ? '✅ Ubicación guardada' : ''}</span></div>
+      ${LF.campo('referencia_entrega', 'Referencia (opcional)')}${LF.campo('telefono_contacto', 'Teléfono de contacto', 'tel', u.telefono || '', 'required')}
+      <h3 style="margin-top:14px">Cupón de descuento</h3>
+      <div class="row"><input id="cuponCodigo" placeholder="Código (ej. VALE-1A2B3C)" style="max-width:220px;text-transform:uppercase"><button type="button" class="btn sm sec" data-act="aplicarCupon">Aplicar</button><button type="button" class="btn sm sec" data-act="quitarCupon" id="btnQuitarCupon" hidden>Quitar</button></div>
+      ${mis.filter(m => m.usable).length ? `<p class="sub" style="margin:6px 0 0">Sus cupones: ${mis.filter(m => m.usable).map(m => `<button type="button" class="badge b-ok" style="cursor:pointer;border:0" data-act="usarCupon" data-codigo="${LF.esc(m.codigo)}">${LF.esc(m.codigo)} · ${m.tipo === 'porcentaje' ? m.valor + ' %' : LF.bs(m.valor)}</button>`).join(' ')}</p>` : ''}
+      <h3 style="margin-top:14px">Forma de pago</h3>
+      <div class="pagos">${Object.entries(LF.METODOS).map(([k, t], i) => `<label class="opt"><input type="radio" name="metodo_pago" value="${k}" ${i === 0 ? 'checked' : ''}><span>${t}</span></label>`).join('')}</div>
+      <p class="sub" style="margin:6px 0 0">Efectivo: paga al repartidor al recibir. QR y PayPal: paga en línea y su pedido pasa a caja ya pagado.</p>
+      <label style="margin-top:12px"><input type="checkbox" id="mayor" style="width:auto"> Declaro ser mayor de 18 años</label>
       <p><button class="btn lg" data-act="confirmar">Confirmar pedido</button></p></form>`
     : `<div class="note">Para confirmar su pedido <a href="#/login">inicie sesión</a> o <a href="#/registro">cree una cuenta</a>.</div>`}</div></div>`);
 };
+LF.pintarCupon = () => {
+  const c = LF.cupon;
+  LF.$('#cuponLinea').innerHTML = c ? `<div class="row"><span>Cupón ${LF.esc(c.codigo)}</span><span class="sp"></span><b>− ${LF.bs(c.descuento_cupon)}</b></div>` : '';
+  LF.$('#totalFinal').textContent = LF.bs(c ? c.total : LF._totalBase);
+  const q = LF.$('#btnQuitarCupon'); if (q) q.hidden = !c;
+};
+LF.acc.aplicarCupon = async () => {
+  const codigo = LF.$('#cuponCodigo').value.trim(); if (!codigo) return LF.toast('Escriba el código del cupón', 'bad');
+  LF.cupon = await LF.post('/cupones/validar', { codigo, items: LF.carrito.map(l => ({ producto_id: l.id, cantidad: l.cantidad })) });
+  LF.pintarCupon(); LF.toast('Cupón aplicado: − ' + LF.bs(LF.cupon.descuento_cupon), 'ok');
+};
+LF.acc.usarCupon = el => { LF.$('#cuponCodigo').value = el.dataset.codigo; return LF.acc.aplicarCupon(); };
+LF.acc.quitarCupon = () => { LF.cupon = null; LF.$('#cuponCodigo').value = ''; LF.pintarCupon(); };
 LF.acc.mas = el => { const l = LF.carrito.find(x => x.id == el.dataset.id); l.cantidad++; LF.guardarCarrito(); return LF.render(); };
 LF.acc.menos = el => { const l = LF.carrito.find(x => x.id == el.dataset.id); if (l.cantidad > 1) l.cantidad--; LF.guardarCarrito(); return LF.render(); };
 LF.acc.quitar = el => { LF.carrito = LF.carrito.filter(x => x.id != el.dataset.id); LF.guardarCarrito(); return LF.render(); };
@@ -188,8 +212,13 @@ LF.acc.confirmar = async () => {
   if (!LF.$('#mayor').checked) return LF.toast('Debe declarar que es mayor de 18 años', 'bad');
   const f = LF.form('#fc'); if (!f.direccion_entrega || !f.telefono_contacto) return LF.toast('Complete dirección y teléfono', 'bad');
   LF._idem = LF._idem || LF.uuid();                                 // reintentos seguros (Idempotency-Key)
-  const p = await LF.api('POST', '/pedidos', { ...f, items: LF.carrito.map(l => ({ producto_id: l.id, cantidad: l.cantidad })) }, { 'Idempotency-Key': LF._idem });
-  LF._idem = null; LF.carrito = []; LF.guardarCarrito(); LF.toast('Pedido #' + p.id + ' registrado', 'ok'); location.hash = '#/pedidos'; LF.detallePedido(p.id);
+  const cuerpo = { ...f, items: LF.carrito.map(l => ({ producto_id: l.id, cantidad: l.cantidad })) };
+  if (LF.cupon) cuerpo.cupon = LF.cupon.codigo;
+  if (LF.ubic) { cuerpo.lat = LF.ubic.lat; cuerpo.lng = LF.ubic.lng; }
+  const p = await LF.api('POST', '/pedidos', cuerpo, { 'Idempotency-Key': LF._idem });
+  LF._idem = null; LF.carrito = []; LF.ubic = null; LF.cupon = null; LF.guardarCarrito(); LF.toast('Pedido #' + p.id + ' registrado', 'ok'); location.hash = '#/pedidos';
+  await LF.detallePedido(p.id);
+  if (p.metodo_pago !== 'efectivo') LF.iniciarPago(p.id, p.metodo_pago, () => { LF.render(); LF.detallePedido(p.id); }).catch(LF.err);   // QR / PayPal: paga ahora
 };
 
 // ---------------- Mis pedidos ----------------
@@ -197,22 +226,25 @@ LF.rutas['/pedidos'] = async () => {
   const d = await LF.get('/pedidos?size=50');
   return LF.pagina('Mis pedidos', 'Seguimiento de sus compras.', LF.tabla([
     { t: '#', f: p => p.id }, { t: 'Fecha', f: p => LF.fecha(p.created_at) }, { t: 'Total', cls: 'num', f: p => LF.bs(p.total) },
-    { t: 'Estado', f: p => LF.badge(p.estado) }, { t: 'Pago', f: p => LF.badge(p.estado_pago) },
+    { t: 'Estado', f: p => LF.badgeEstado(p.estado) }, { t: 'Pago', f: p => LF.badge(p.estado_pago) },
     { t: '', f: p => `<button class="btn sm sec" data-act="verPedido" data-id="${p.id}">Ver</button>` }], d.items, 'Aún no tiene pedidos.'));
 };
 LF.acc.verPedido = el => LF.detallePedido(el.dataset.id);
 LF.detallePedido = async (id) => {
   const [p, seg] = await Promise.all([LF.get('/pedidos/' + id), LF.get('/pedidos/' + id + '/seguimiento').catch(() => null)]);
-  const puedePagar = p.estado_pago === 'pendiente' && ['pendiente', 'en_camino'].includes(p.estado);
-  LF.modal(`<h2>Pedido #${p.id} ${LF.badge(p.estado)} ${LF.badge(p.estado_pago)}</h2>
-    <dl class="kv"><dt>Entrega</dt><dd>${LF.esc(p.direccion_entrega)} ${LF.esc(p.referencia_entrega || '')}</dd><dt>Contacto</dt><dd>${LF.esc(p.telefono_contacto)}</dd><dt>Repartidor</dt><dd>${LF.esc(p.repartidor || 'Sin asignar')}</dd></dl>
+  const puedePagar = p.estado_pago === 'pendiente' && ['pendiente', 'confirmado', 'preparado', 'en_camino'].includes(p.estado);
+  const mapa = p.estado === 'en_camino';
+  LF.modal(`<h2>Pedido #${p.id} ${LF.badgeEstado(p.estado)} ${LF.badge(p.estado_pago)}</h2>
+    ${mapa ? `<p><button class="btn lg" data-act="verMapa" data-id="${p.id}" data-dir="${LF.esc(p.direccion_entrega)}">🛵 Seguir mi pedido en vivo</button></p>` : ''}
+    <dl class="kv"><dt>Entrega</dt><dd>${LF.esc(p.direccion_entrega)} ${LF.esc(p.referencia_entrega || '')} ${p.lat_entrega != null ? `<a target="_blank" rel="noopener" href="https://www.google.com/maps?q=${p.lat_entrega},${p.lng_entrega}">📍 ubicación</a>` : ''}</dd><dt>Contacto</dt><dd>${LF.esc(p.telefono_contacto)}</dd><dt>Pago</dt><dd>${LF.METODOS[p.metodo_pago] || ''}</dd><dt>Repartidor</dt><dd>${LF.esc(p.repartidor || 'Se asignará al preparar el pedido')}</dd></dl>
     ${LF.tabla([{ t: 'Producto', f: i => LF.esc(i.nombre) }, { t: 'Cant.', f: i => i.cantidad }, { t: 'Subtotal', cls: 'num', f: i => LF.bs(i.subtotal) }], p.items)}
     <p class="ticket"><span class="tot"><span>Total</span><span>${LF.bs(p.total)}</span></span></p>
     ${seg ? `<h3>Seguimiento</h3><ul class="tl">${seg.linea_tiempo.map(e => `<li><b>${LF.esc(e.evento)}</b> <span class="sub">${LF.fecha(e.fecha)} ${LF.esc(e.detalle || '')}</span></li>`).join('')}</ul>` : ''}
-    <div class="row noprint">${puedePagar ? `<button class="btn ok" data-act="pagarQr" data-id="${p.id}">Pagar con QR</button><span class="sub" style="margin:0">o pague en efectivo al recibir</span>` : ''}
+    <div class="row noprint">${puedePagar ? `<button class="btn ok" data-act="pagarQr" data-id="${p.id}">Pagar con QR</button><button class="btn" style="background:#0070ba" data-act="pagarPaypal" data-id="${p.id}">Pagar con PayPal</button>${p.metodo_pago === 'efectivo' ? '<span class="sub" style="margin:0">o pague en efectivo al recibir</span>' : ''}` : ''}
     ${p.estado_pago === 'pagado' ? `<button class="btn sec" data-act="comprobante" data-id="${p.id}">Ver comprobante</button>` : ''}<span class="sp"></span><button class="btn sec" data-act="cerrar">Cerrar</button></div>`, true);
 };
-LF.acc.pagarQr = async el => { const pago = await LF.post('/pagos', { venta_id: +el.dataset.id, metodo: 'qr' }, { 'Idempotency-Key': LF.uuid() }); LF.verQr(pago, () => { LF.render(); LF.detallePedido(el.dataset.id); }); };
+LF.acc.pagarQr = el => LF.iniciarPago(el.dataset.id, 'qr', () => { LF.render(); LF.detallePedido(el.dataset.id); });
+LF.acc.pagarPaypal = el => LF.iniciarPago(el.dataset.id, 'paypal', () => { LF.render(); LF.detallePedido(el.dataset.id); });
 
 // ---------------- Perfil ----------------
 LF.rutas['/perfil'] = async () => {
