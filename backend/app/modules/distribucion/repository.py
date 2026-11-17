@@ -36,3 +36,29 @@ class EntregaRepository:
 
     @staticmethod
     def historial_venta(cur, venta_id): return all_(cur, 'SELECT e.asignada_en,e.cerrada_en,e.resultado,e.observacion,CONCAT(u.nombre," ",u.apellido) AS repartidor FROM entregas e JOIN usuarios u ON u.id=e.repartidor_id WHERE e.venta_id=%s ORDER BY e.id', (venta_id,))
+
+
+# --- Ubicación en vivo del repartidor (la tabla se crea sola la primera vez; no requiere migración manual) ---
+_TABLA_UBICACION = False
+
+
+def asegurar_tabla_ubicacion():
+    global _TABLA_UBICACION
+    if _TABLA_UBICACION:
+        return
+    from ...db import transaction
+    with transaction() as cur:
+        run(cur, 'CREATE TABLE IF NOT EXISTS ubicaciones_entrega (venta_id INT PRIMARY KEY, repartidor_id INT NOT NULL, '
+                 'lat DECIMAL(9,6) NOT NULL, lng DECIMAL(9,6) NOT NULL, actualizado TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ENGINE=InnoDB', ())
+    _TABLA_UBICACION = True
+
+
+class UbicacionRepository:
+    @staticmethod
+    def guardar(cur, venta_id, repartidor_id, lat, lng):
+        run(cur, 'INSERT INTO ubicaciones_entrega(venta_id,repartidor_id,lat,lng) VALUES(%s,%s,%s,%s) '
+                 'ON DUPLICATE KEY UPDATE repartidor_id=VALUES(repartidor_id), lat=VALUES(lat), lng=VALUES(lng), actualizado=NOW()', (venta_id, repartidor_id, lat, lng))
+
+    @staticmethod
+    def de_venta(cur, venta_id):
+        return one(cur, 'SELECT venta_id,lat,lng,actualizado,TIMESTAMPDIFF(SECOND, actualizado, NOW()) AS hace_seg FROM ubicaciones_entrega WHERE venta_id=%s', (venta_id,))

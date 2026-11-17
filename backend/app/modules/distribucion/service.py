@@ -10,7 +10,7 @@ from ..ecommerce.facade import EcommerceFacade as ECO
 from ..pagos.facade import PagosFacade
 from ..seguridad.repository import UsuarioRepository as U
 from . import notificacion  # noqa: F401  (registra los observadores)
-from .repository import EntregaRepository as E
+from .repository import EntregaRepository as E, UbicacionRepository as UB, asegurar_tabla_ubicacion
 
 
 def _num(row):
@@ -133,6 +133,39 @@ class EntregaService:
         bus.publish(evento, usuario_id=user['id'], entidad='venta', entidad_id=vid, telefono=venta['telefono_contacto'], detalle={'observacion': campos['observacion_entrega']})
         resultado['estado'] = campos['estado']
         return resultado
+
+    @staticmethod
+    def guardar_ubicacion(user, vid, d):
+        """El celular del repartidor envía su posición GPS mientras el pedido está «en camino»."""
+        try:
+            lat, lng = float(d.get('lat')), float(d.get('lng'))
+        except (TypeError, ValueError):
+            raise invalido('Latitud y longitud deben ser números', {'campo': 'lat/lng'})
+        if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+            raise invalido('Coordenadas fuera de rango', {'campo': 'lat/lng'})
+        asegurar_tabla_ubicacion()
+        with transaction() as cur:
+            venta = EntregaService._delivery_abierto(cur, vid)
+            if venta['repartidor_id'] != user['id']:
+                raise prohibido('El pedido no está asignado a usted')
+            if venta['estado'] != 'en_camino':
+                raise conflicto('ESTADO_INVALIDO', 'Solo se comparte la ubicación mientras el pedido está en camino')
+            UB.guardar(cur, vid, user['id'], round(lat, 6), round(lng, 6))
+        return {'ok': True}
+
+    @staticmethod
+    def ubicacion(user, vid):
+        """Última posición conocida del repartidor, para el mapa del cliente."""
+        asegurar_tabla_ubicacion()
+        with read() as cur:
+            venta = ECO.venta(cur, vid)
+            if not venta or venta['tipo_venta'] != 'delivery' or (user['rol'] == 'cliente' and venta['usuario_id'] != user['id']):
+                raise no_encontrado('Pedido no encontrado')
+            pos = UB.de_venta(cur, vid) if venta['estado'] == 'en_camino' else None
+        out = {'venta_id': vid, 'estado': venta['estado'], 'repartidor': venta.get('repartidor'), 'direccion_entrega': venta['direccion_entrega'], 'disponible': pos is not None}
+        if pos:
+            out.update(lat=float(pos['lat']), lng=float(pos['lng']), actualizado=pos['actualizado'], hace_seg=int(pos['hace_seg'] or 0))
+        return out
 
     @staticmethod
     def seguimiento(user, vid):

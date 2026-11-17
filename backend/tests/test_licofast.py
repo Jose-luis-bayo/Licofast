@@ -373,3 +373,23 @@ def test_google_login_crea_cliente_y_exige_completar_perfil(c, monkeypatch):
 
 def test_google_sin_configurar_responde_503(c):
     assert c.post('/api/v1/auth/google', json={'credential': 'x'}).status_code == 503
+
+
+# ------------------------------------------------------------------ Ubicación en vivo
+def test_ubicacion_en_vivo_del_repartidor(c, H):
+    pid = nuevo_producto(c, H, 5, 20)
+    vid = pedido(c, H, pid, 1).get_json()['id']
+    ub = f'/api/v1/entregas/{vid}/ubicacion'
+    assert c.put(ub, json={'lat': -19.03, 'lng': -65.26}, headers=H['repartidor1']).status_code == 403      # aún no le está asignado/en camino
+    assert c.get(f'/api/v1/pedidos/{vid}/ubicacion', headers=H['cliente1']).get_json()['disponible'] is False
+    c.put(f'/api/v1/entregas/{vid}/en-camino', headers=H['repartidor1'])
+    assert c.put(ub, json={'lat': 'x', 'lng': 1}, headers=H['repartidor1']).status_code == 422
+    assert c.put(ub, json={'lat': 99, 'lng': 1}, headers=H['repartidor1']).status_code == 422
+    assert c.put(ub, json={'lat': -19.0333, 'lng': -65.2627}, headers=H['repartidor1']).status_code == 200
+    assert c.put(ub, json={'lat': -19.0340, 'lng': -65.2630}, headers=H['repartidor1']).status_code == 200  # actualiza
+    assert c.put(ub, json={'lat': 1, 'lng': 1}, headers=H['cliente1']).status_code == 403                  # el cliente no puede reportar
+    r = c.get(f'/api/v1/pedidos/{vid}/ubicacion', headers=H['cliente1']).get_json()
+    assert r['disponible'] is True and abs(r['lat'] + 19.034) < 1e-6 and abs(r['lng'] + 65.263) < 1e-6
+    assert c.get(f'/api/v1/pedidos/{vid}/ubicacion', headers=H['admin_api']).status_code == 200
+    c.put(f'/api/v1/entregas/{vid}', json={'accion': 'entregado'}, headers=H['repartidor1'])
+    assert c.get(f'/api/v1/pedidos/{vid}/ubicacion', headers=H['cliente1']).get_json()['disponible'] is False

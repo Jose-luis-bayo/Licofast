@@ -34,6 +34,16 @@ def en_camino(vid): return jsonify(EntregaService.en_camino(g.user, vid))
 def en_destino(vid): return jsonify(EntregaService.en_destino(g.user, vid))
 
 
+@bp.put('/entregas/<int:vid>/ubicacion')
+@auth_required('repartidor')
+def guardar_ubicacion(vid): return jsonify(EntregaService.guardar_ubicacion(g.user, vid, _json()))
+
+
+@bp.get('/pedidos/<int:vid>/ubicacion')
+@auth_required('cliente', 'administrador', 'repartidor')
+def ubicacion(vid): return jsonify(EntregaService.ubicacion(g.user, vid))
+
+
 @bp.put('/pedidos/<int:vid>/asignacion')
 @auth_required('administrador')
 def asignar(vid): return jsonify(EntregaService.asignar(g.user, vid, _json()))
