@@ -21,40 +21,155 @@ def _num(row):
     return {k: (float(x) if isinstance(x, Decimal) else x) for k, x in row.items()}
 
 
+TIPOS_LINEA = ('porcentaje', 'monto', 'llevapaga', 'segunda')      # se aplican a cada producto del carrito
+TIPOS_PEDIDO = ('pedido_pct', 'pedido_monto')                         # se aplican al total del pedido
+TIPOS_PROMO = TIPOS_LINEA + TIPOS_PEDIDO
+ZONA_BO = datetime.timezone(datetime.timedelta(hours=-4))             # Bolivia (UTC-4, sin horario de verano)
+
+
+def ahora_local():
+    return datetime.datetime.now(ZONA_BO).replace(tzinfo=None)
+
+
+def _hhmm(t):
+    if t is None:
+        return None
+    if isinstance(t, datetime.timedelta):
+        m = int(t.total_seconds() // 60)
+        return f'{m // 60:02d}:{m % 60:02d}'
+    return str(t)[:5]
+
+
 class PromocionService:
     @staticmethod
-    def precio_efectivo(prod, promos):
-        """Menor precio entre las promociones vigentes aplicables a un producto."""
-        base, mejor, nombre = Decimal(prod['precio']), Decimal(prod['precio']), None
-        for p in promos:
-            aplica = (p['producto_id'] == prod['id']) or (p['categoria_id'] is not None and p['categoria_id'] == prod.get('categoria_id')) \
-                or (p['producto_id'] is None and p['categoria_id'] is None)
-            if not aplica:
+    def vigentes(cur):
+        """Promociones activas hoy, en este día de la semana y a esta hora (hora de Bolivia)."""
+        ahora = ahora_local()
+        out = []
+        for p in PR.vigentes(cur, ahora.date()):
+            if p.get('dias') and str(ahora.isoweekday()) not in str(p['dias']).split(','):
                 continue
-            nuevo = base * (1 - Decimal(p['valor']) / 100) if p['tipo'] == 'porcentaje' else base - Decimal(p['valor'])
-            nuevo = max(_q(nuevo), Decimal('0.00'))
-            if nuevo < mejor:
-                mejor, nombre = nuevo, p['nombre']
-        return _q(mejor), nombre
+            hd, hh = _hhmm(p.get('hora_desde')), _hhmm(p.get('hora_hasta'))
+            if hd and hh:
+                t = f'{ahora:%H:%M}'
+                if not ((hd <= t <= hh) if hd <= hh else (t >= hd or t <= hh)):
+                    continue
+            out.append(p)
+        return out
+
+    @staticmethod
+    def _aplica(p, prod):
+        return (p['producto_id'] == prod['id']) or (p['categoria_id'] is not None and p['categoria_id'] == prod.get('categoria_id')) \
+            or (p['producto_id'] is None and p['categoria_id'] is None)
+
+    @staticmethod
+    def precio_efectivo(prod, promos):
+        """Precio unitario para el catálogo: la mejor promoción de porcentaje/monto. Las demás (2x1, por cantidad…) solo dan etiqueta."""
+        base, mejor, nombre, etiqueta = Decimal(prod['precio']), Decimal(prod['precio']), None, None
+        for p in promos:
+            if p['tipo'] in TIPOS_PEDIDO or not PromocionService._aplica(p, prod):
+                continue
+            if p['tipo'] in ('porcentaje', 'monto') and (p.get('min_cantidad') or 1) <= 1:
+                nuevo = base * (1 - Decimal(p['valor']) / 100) if p['tipo'] == 'porcentaje' else base - Decimal(p['valor'])
+                nuevo = max(_q(nuevo), Decimal('0.00'))
+                if nuevo < mejor:
+                    mejor, nombre = nuevo, p['nombre']
+            elif etiqueta is None:
+                etiqueta = p['nombre']
+        return _q(mejor), (nombre or etiqueta)
+
+    @staticmethod
+    def linea(prod, cant, promos):
+        """Mejor promoción para esta cantidad de un producto → {precio_unitario, descuento (de la línea), nombre, total}."""
+        base = Decimal(prod['precio'])
+        mejor = {'precio_unitario': _q(base), 'descuento': Decimal('0.00'), 'nombre': None}
+        mejor_total = _q(base) * cant
+        for p in promos:
+            if p['tipo'] not in TIPOS_LINEA or not PromocionService._aplica(p, prod) or cant < max(1, p.get('min_cantidad') or 1):
+                continue
+            pu, d, val = _q(base), Decimal('0.00'), Decimal(p['valor'] or 0)
+            if p['tipo'] == 'porcentaje':
+                pu = _q(base * (1 - val / 100))
+            elif p['tipo'] == 'monto':
+                pu = max(_q(base - val), Decimal('0.00'))
+            elif p['tipo'] == 'llevapaga':
+                n, m = p.get('lleva') or 0, p.get('paga') or 0
+                if not (n >= 2 and 0 < m < n and cant >= n):
+                    continue
+                d = _q(base * ((cant // n) * (n - m)))
+            elif p['tipo'] == 'segunda':
+                if cant < 2:
+                    continue
+                d = _q(base * (cant // 2) * val / 100)
+            total = pu * cant - d
+            if total < mejor_total:
+                mejor, mejor_total = {'precio_unitario': pu, 'descuento': d, 'nombre': p['nombre']}, total
+        mejor['total'] = _q(mejor_total)
+        return mejor
+
+    @staticmethod
+    def pedido(subtotal, promos):
+        """Mejor promoción sobre el total del pedido → (descuento, nombre)."""
+        mejor, nombre = Decimal('0.00'), None
+        for p in promos:
+            if p['tipo'] not in TIPOS_PEDIDO or subtotal < Decimal(p.get('minimo_pedido') or 0):
+                continue
+            d = _q(subtotal * Decimal(p['valor']) / 100) if p['tipo'] == 'pedido_pct' else _q(min(Decimal(p['valor']), subtotal))
+            if d > mejor:
+                mejor, nombre = d, p['nombre']
+        return mejor, nombre
 
     @staticmethod
     def _datos(d):
         tipo = d.get('tipo')
-        if tipo not in ('porcentaje', 'monto'):
-            raise invalido('El tipo debe ser «porcentaje» o «monto»')
-        valor = v.decimal(d, 'valor', minimo=0.01)
-        if tipo == 'porcentaje' and valor > 100:
-            raise invalido('El porcentaje no puede superar 100')
+        if tipo not in TIPOS_PROMO:
+            raise invalido('Tipo de promoción no válido', {'campo': 'tipo'})
+        valor, lleva, paga = Decimal('0'), None, None
+        if tipo == 'llevapaga':
+            lleva, paga = v.entero(d, 'lleva', 2), v.entero(d, 'paga', 1)
+            if paga >= lleva:
+                raise invalido('«Paga» debe ser menor que «Lleva» (ej.: lleva 2, paga 1)', {'campo': 'paga'})
+        else:
+            valor = v.decimal(d, 'valor', minimo=0.01)
+            if tipo in ('porcentaje', 'segunda', 'pedido_pct') and valor > 100:
+                raise invalido('El porcentaje no puede superar 100', {'campo': 'valor'})
         desde, hasta = v.fecha(d.get('desde'), 'desde'), v.fecha(d.get('hasta'), 'hasta')
         if hasta < desde:
             raise invalido('«hasta» no puede ser anterior a «desde»')
-        return dict(nombre=v.texto(d, 'nombre', max_len=100), tipo=tipo, valor=valor, producto_id=v.entero(d, 'producto_id', 1, False),
-                    categoria_id=v.entero(d, 'categoria_id', 1, False), desde=desde, hasta=hasta, activo=0 if str(d.get('activo', 1)) in ('0', 'False', 'false') else 1)
+        dias = d.get('dias') or ''
+        if isinstance(dias, list):
+            dias = ','.join(str(x) for x in dias)
+        dias = ','.join(sorted({x.strip() for x in str(dias).split(',') if x.strip()}))
+        if dias and not all(x in '1234567' and len(x) == 1 for x in dias.split(',')):
+            raise invalido('Los días deben ser del 1 (lunes) al 7 (domingo)', {'campo': 'dias'})
+        hd, hh = (d.get('hora_desde') or None), (d.get('hora_hasta') or None)
+        for h in (hd, hh):
+            if h and not (len(str(h)) >= 5 and str(h)[2] == ':' and str(h)[:2].isdigit() and str(h)[3:5].isdigit() and int(str(h)[:2]) < 24 and int(str(h)[3:5]) < 60):
+                raise invalido('El horario debe tener formato HH:MM', {'campo': 'hora_desde'})
+        if bool(hd) != bool(hh):
+            raise invalido('Indique la hora inicial y la final del horario (o ninguna)', {'campo': 'hora_desde'})
+        es_pedido = tipo in TIPOS_PEDIDO
+        return dict(nombre=v.texto(d, 'nombre', max_len=100), tipo=tipo, valor=valor, lleva=lleva, paga=paga,
+                    min_cantidad=1 if es_pedido else (v.entero(d, 'min_cantidad', 1, False) or 1),
+                    minimo_pedido=(v.decimal(d, 'minimo_pedido', 0, obligatorio=False) or Decimal('0')) if es_pedido else Decimal('0'),
+                    dias=dias or None, hora_desde=(str(hd)[:5] if hd else None), hora_hasta=(str(hh)[:5] if hh else None),
+                    descripcion=v.texto(d, 'descripcion', obligatorio=False, max_len=160),
+                    producto_id=None if es_pedido else v.entero(d, 'producto_id', 1, False), categoria_id=None if es_pedido else v.entero(d, 'categoria_id', 1, False),
+                    desde=desde, hasta=hasta, activo=0 if str(d.get('activo', 1)) in ('0', 'False', 'false') else 1)
+
+    @staticmethod
+    def activar(pid, activo, uid):
+        with transaction() as cur:
+            if not one(cur, 'SELECT id FROM promociones WHERE id=%s', (pid,)):
+                raise no_encontrado('Promoción no encontrada')
+            PR.activar(cur, pid, 1 if activo else 0)
+        bus.publish('PromocionActivada' if activo else 'PromocionDesactivada', usuario_id=uid, entidad='promocion', entidad_id=pid, detalle=None)
+        return {'mensaje': 'Promoción activada' if activo else 'Promoción desactivada'}
 
     @staticmethod
     def listar():
         with read() as cur:
-            return [_num(r) for r in PR.todas(cur)]
+            return [{**_num(r), 'hora_desde': _hhmm(r.get('hora_desde')), 'hora_hasta': _hhmm(r.get('hora_hasta'))} for r in PR.todas(cur)]
 
     @staticmethod
     def crear(d, uid):
@@ -84,7 +199,7 @@ class CatalogoService:
     @staticmethod
     def listar_publico(q=None, categoria_id=None):
         with read() as cur:
-            prods, promos = P.publico(cur, q, categoria_id), PR.vigentes(cur)
+            prods, promos = P.publico(cur, q, categoria_id), PromocionService.vigentes(cur)
         out = []
         for p in prods:
             precio, promo = PromocionService.precio_efectivo(p, promos)
@@ -248,13 +363,15 @@ class PedidoService:
     @staticmethod
     def _crear(cur, *, cliente_id, cajero_id, tipo, canal, items, creador_id, entrega=None, estado_inicial=None, cupon=None):
         lineas = InventarioService.reservar(cur, items)
-        promos = PR.vigentes(cur)
+        promos = PromocionService.vigentes(cur)
         total, desc, detalle = Decimal('0'), Decimal('0'), []
         for p, cant in lineas:
-            precio, _ = PromocionService.precio_efectivo(p, promos)
-            total += precio * cant
-            desc += (Decimal(p['precio']) - precio) * cant
-            detalle.append((p, cant, precio))
+            ln = PromocionService.linea(p, cant, promos)
+            total += ln['total']
+            desc += (Decimal(p['precio']) - ln['precio_unitario']) * cant + ln['descuento']
+            detalle.append((p, cant, ln['precio_unitario'], ln['descuento']))
+        dped, _ = PromocionService.pedido(_q(total), promos)               # promoción sobre el total del pedido
+        total, desc = total - dped, desc + dped
         cup, dcup = None, Decimal('0')
         if cupon and cliente_id and tipo == 'delivery':                  # el cupón se aplica sobre el total ya con promociones
             from .cupones import CuponService
@@ -269,8 +386,8 @@ class PedidoService:
             if estado_inicial:
                 datos.update(estado=estado_inicial, confirmado_en=datetime.datetime.now(), confirmado_por=creador_id)
         vid = V.insertar(cur, datos)
-        for p, cant, precio in detalle:
-            V.insertar_detalle(cur, vid, p['id'], cant, precio)
+        for p, cant, precio, dlinea in detalle:
+            V.insertar_detalle(cur, vid, p['id'], cant, precio, dlinea)
         InventarioService.descontar(cur, vid, lineas, creador_id)
         if cup:
             from .cupones import CuponRepository
@@ -313,17 +430,19 @@ class PedidoService:
                 fusion[pid] = fusion.get(pid, 0) + cant
             if not fusion:
                 raise invalido('El carrito está vacío', codigo='CARRITO_VACIO')
-            promos, lineas, total, desc = PR.vigentes(cur), [], Decimal('0'), Decimal('0')
+            promos, lineas, total, desc = PromocionService.vigentes(cur), [], Decimal('0'), Decimal('0')
             for pid, cant in fusion.items():
                 p = P.por_id(cur, pid)
                 if not p or not p['activo']:
                     raise invalido(f'El producto {pid} no está disponible', codigo='PRODUCTO_NO_DISPONIBLE')
-                precio, promo = PromocionService.precio_efectivo(p, promos)
-                total += precio * cant
-                desc += (Decimal(p['precio']) - precio) * cant
-                lineas.append({'producto_id': pid, 'nombre': p['nombre'], 'cantidad': cant, 'precio_unitario': float(precio), 'subtotal': float(precio * cant),
-                               'promocion': promo, 'stock_suficiente': p['stock'] >= cant})
-        return {'lineas': lineas, 'total': float(_q(total)), 'descuento': float(_q(desc))}
+                ln = PromocionService.linea(p, cant, promos)
+                total += ln['total']
+                desc += (Decimal(p['precio']) - ln['precio_unitario']) * cant + ln['descuento']
+                lineas.append({'producto_id': pid, 'nombre': p['nombre'], 'cantidad': cant, 'precio_unitario': float(ln['precio_unitario']), 'subtotal': float(ln['total']),
+                               'promocion': ln['nombre'], 'stock_suficiente': p['stock'] >= cant})
+            dped, nped = PromocionService.pedido(_q(total), promos)
+            total, desc = total - dped, desc + dped
+        return {'lineas': lineas, 'total': float(_q(total)), 'descuento': float(_q(desc)), 'promocion_pedido': nped, 'descuento_pedido': float(dped)}
 
     @staticmethod
     def crear_pedido(user, d, canal='web', cliente=None):
@@ -391,6 +510,11 @@ class PedidoService:
         return False
 
     @staticmethod
+    def _wa_url(texto):
+        import urllib.parse
+        return f'https://wa.me/{Config.WHATSAPP_NEGOCIO}?text=' + urllib.parse.quote(texto)
+
+    @staticmethod
     def obtener(user, vid):
         from ..pagos.facade import PagosFacade
         with read() as cur:
@@ -400,7 +524,67 @@ class PedidoService:
             venta = _num(venta)
             venta['items'] = [_num(i) for i in V.detalle(cur, vid)]
             venta['pago'] = PagosFacade.ultimo_pago(cur, vid)
+            if user['rol'] == 'cliente' and venta['tipo_venta'] == 'delivery':
+                # qué puede hacer el cliente: editar/cancelar solo antes de que caja lo confirme y sin pago recibido
+                libre = venta['estado'] == 'pendiente' and venta['estado_pago'] == 'pendiente'
+                venta['puede_editar'] = libre
+                venta['puede_cancelar'] = libre and venta.get('metodo_pago') in ('qr', 'paypal')
+                pago_recibido = one(cur, 'SELECT 1 AS x FROM pagos WHERE venta_id=%s AND confirmado_en IS NOT NULL LIMIT 1', (vid,))
+                venta['devolucion_pendiente'] = bool(pago_recibido) and venta['estado'] == 'no_entregado'
+                venta['whatsapp_url'] = PedidoService._wa_url(f'Hola, soy cliente de LicoFast. Pedido #{vid}: ' + (
+                    'necesito la devolución de mi pago. Adjunto mi QR para que me devuelvan el dinero.' if venta['devolucion_pendiente'] or venta['estado_pago'] == 'pagado'
+                    else 'necesito cancelarlo.'))
         return venta
+
+    @staticmethod
+    def _propio_delivery(cur, user, vid):
+        venta = V.bloquear(cur, vid)
+        if not venta or venta['usuario_id'] != user['id'] or venta['tipo_venta'] != 'delivery':
+            raise no_encontrado('Pedido no encontrado')
+        return venta
+
+    @staticmethod
+    def cancelar_cliente(user, vid):
+        """El cliente solo cancela un pedido de pago en línea (QR/PayPal) que aún no pagó y que caja no confirmó.
+        Si ya pagó, o es en efectivo, debe hablar con el cajero por WhatsApp (la devolución se hace por QR, fuera del sistema)."""
+        from ..pagos.facade import PagosFacade
+        with transaction() as cur:
+            venta = PedidoService._propio_delivery(cur, user, vid)
+            wa = PedidoService._wa_url(f'Hola, soy cliente de LicoFast. Pedido #{vid}: necesito cancelarlo / la devolución de mi pago. Adjunto mi QR.')
+            if venta['estado'] in ('entregada', 'no_entregado'):
+                raise conflicto('PEDIDO_YA_PROCESADO', 'El pedido ya fue procesado')
+            if venta['estado'] != 'pendiente' or venta['estado_pago'] == 'pagado':
+                raise conflicto('NO_CANCELABLE', 'Este pedido ya no se puede cancelar desde la app. Escriba por WhatsApp al cajero y envíe su QR si necesita la devolución del dinero.', {'whatsapp_url': wa})
+            if venta.get('metodo_pago') not in ('qr', 'paypal'):
+                raise conflicto('NO_CANCELABLE', 'Un pedido en efectivo no se cancela desde la app. Si se equivocó, escriba por WhatsApp al cajero.', {'whatsapp_url': wa})
+            PagosFacade.anular_pagos_de_venta(cur, vid, 'Cancelado por el cliente')
+            PedidoService.cancelar_venta(cur, vid, 'Cancelado por el cliente', user['id'])
+        bus.publish('PedidoCancelado', usuario_id=user['id'], entidad='venta', entidad_id=vid, detalle={'por': 'cliente'})
+        return {'mensaje': 'Pedido cancelado'}
+
+    @staticmethod
+    def editar(user, vid, d):
+        """El cliente corrige su pedido mientras no esté pagado ni confirmado: se anula el anterior y se crea uno nuevo
+        con los mismos datos de entrega (el stock se repone y se vuelve a reservar, y el cupón se vuelve a validar)."""
+        from ..pagos.facade import PagosFacade
+        if not d.get('items'):
+            raise invalido('El pedido debe tener al menos un producto', {'campo': 'items'})
+        PedidoService._exigir_mayor(user.get('fecha_nacimiento'))
+        with transaction() as cur:
+            venta = PedidoService._propio_delivery(cur, user, vid)
+            if venta['estado'] != 'pendiente' or venta['estado_pago'] != 'pendiente':
+                raise conflicto('NO_EDITABLE', 'Solo se puede editar un pedido que aún no fue pagado ni confirmado por caja')
+            base = {'direccion_entrega': venta['direccion_entrega'], 'telefono_contacto': venta['telefono_contacto'], 'referencia_entrega': venta.get('referencia_entrega'),
+                    'metodo_pago': venta.get('metodo_pago') or 'efectivo', 'lat': venta.get('lat_entrega'), 'lng': venta.get('lng_entrega')}
+            base.update({k: d[k] for k in base if k in d})
+            entrega = PedidoService._entrega(base, user.get('telefono'))
+            cupon = d['cupon'] if 'cupon' in d else venta.get('cupon_codigo')
+            PagosFacade.anular_pagos_de_venta(cur, vid, 'Pedido editado por el cliente')
+            PedidoService.cancelar_venta(cur, vid, 'Reemplazado: el cliente editó el pedido', user['id'])
+            nuevo, total, _ = PedidoService._crear(cur, cliente_id=user['id'], cajero_id=None, tipo='delivery', canal=venta.get('canal') or 'web', items=d['items'],
+                                                   creador_id=user['id'], entrega=entrega, cupon=cupon or None, estado_inicial=None)
+        bus.publish('PedidoEditado', usuario_id=user['id'], entidad='venta', entidad_id=nuevo, detalle={'reemplaza': vid, 'total': str(total)})
+        return PedidoService.obtener(user, nuevo)
 
     @staticmethod
     def listar(user, f, limit, offset):

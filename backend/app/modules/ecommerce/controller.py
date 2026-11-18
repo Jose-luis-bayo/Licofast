@@ -178,3 +178,19 @@ def cupones_asignar(): return jsonify(CuponService.asignar(g.user, _json())), 20
 @bp.post('/cupones/recompensas')
 @auth_required('administrador')
 def cupones_recompensas(): return jsonify(CuponService.generar_recompensas(g.user))
+
+
+# ------------------------- El cliente corrige o cancela su propio pedido -------------------------
+@bp.put('/pedidos/<int:vid>')
+@auth_required('cliente')
+def pedido_editar(vid): return jsonify(PedidoService.editar(g.user, vid, _json())), 200
+
+
+@bp.put('/pedidos/<int:vid>/cancelar')
+@auth_required('cliente')
+def pedido_cancelar(vid): return jsonify(PedidoService.cancelar_cliente(g.user, vid))
+
+
+@bp.put('/promociones/<int:pid>/estado')
+@auth_required('administrador')
+def promo_estado(pid): return jsonify(PromocionService.activar(pid, bool(_json().get('activo')), g.user['id']))

@@ -57,31 +57,33 @@ LF.tabla = (cols, filas, vacio = 'Sin registros') =>
 // Muestra un QR de pago y consulta el estado hasta confirmarse
 LF.verQr = (pago, onPagado) => {
   LF._pagoActual = pago; LF._onPagadoActual = onPagado;
-  const tipo = LF._qrTipo || 'dinamico';
+  const tipo = (LF.user && LF.user.rol === 'cliente') ? 'dinamico' : (LF._qrTipo || 'dinamico');
   const qr = qrcode(0, 'M'); qr.addData(pago.qr_payload); qr.make();
   LF.modal(`<h2>Pagar con QR</h2>
-    <div class="row" style="justify-content:center;margin-bottom:12px;gap:6px">
+    ${LF.user && LF.user.rol === 'cliente' ? '' : `<div class="row" style="justify-content:center;margin-bottom:12px;gap:6px">
       <button class="btn sm ${tipo === 'dinamico' ? '' : 'sec'}" data-act="qrModo" data-tipo="dinamico">QR Dinámico</button>
       <button class="btn sm ${tipo === 'oficial' ? '' : 'sec'}" data-act="qrModo" data-tipo="oficial">QR Banco Económico</button>
-    </div>
+    </div>`}
     <div class="qrbox" style="min-height:230px;display:flex;align-items:center;justify-content:center">
       ${tipo === 'oficial' ? '<img src="img/QR.jpg" alt="QR Banco Económico" style="max-height:240px;max-width:240px;border-radius:8px;object-fit:contain">' : qr.createSvgTag({ cellSize: 6, margin: 2, scalable: true })}
     </div>
     <p style="text-align:center;font-size:22px;font-weight:800;margin:8px 0">${LF.bs(pago.monto)}</p>
     <p class="mono" style="text-align:center">Ref: ${LF.esc(pago.referencia)}</p>
     <div id="qrEstado" class="note">⏳ Esperando la confirmación del banco… vence ${LF.fecha(pago.qr_expira_en)}</div>
-    <div class="row noprint"><button class="btn sec sm" data-act="simularQr" data-ref="${LF.esc(pago.referencia)}">Demo: simular pago del banco</button><span class="sp"></span><button class="btn sec" data-act="cerrar">Cerrar</button></div>`);
+    <div class="row noprint"><button class="btn sec sm" data-act="simularQr" data-ref="${LF.esc(pago.referencia)}">Demo: simular pago del banco</button><span class="sp"></span><button class="btn sec" data-act="cerrarPago">Cerrar</button></div>`);
   clearInterval(LF._poll);
   LF._poll = setInterval(async () => {
     try {
       const p = await LF.get('/pagos/' + pago.id);
-      if (p.estado === 'confirmado') { clearInterval(LF._poll); LF.$('#qrEstado').className = 'note ok'; LF.$('#qrEstado').innerHTML = '✅ Pago confirmado'; LF.toast('Pago confirmado', 'ok'); setTimeout(() => { LF.cerrar(); onPagado && onPagado(p); }, 900); }
+      if (p.estado === 'confirmado') { clearInterval(LF._poll); LF._onCerrarPago = null; LF.$('#qrEstado').className = 'note ok'; LF.$('#qrEstado').innerHTML = '✅ Pago confirmado'; LF.toast('Pago confirmado', 'ok'); setTimeout(() => { LF.cerrar(); onPagado && onPagado(p); }, 900); }
       else if (p.estado === 'vencido' || p.estado === 'anulado') { clearInterval(LF._poll); LF.$('#qrEstado').className = 'note bad'; LF.$('#qrEstado').innerHTML = 'El QR venció. Genere uno nuevo.'; }
     } catch (e) { clearInterval(LF._poll); }
   }, 2500);
 };
 LF.acc.qrModo = el => { LF._qrTipo = el.dataset.tipo; LF.verQr(LF._pagoActual, LF._onPagadoActual); };
 LF.acc.cerrar = () => LF.cerrar();
+// Cerrar la ventana de pago sin pagar: se detiene la consulta y se abre el detalle del pedido (allí puede editarlo o cancelarlo)
+LF.acc.cerrarPago = () => { clearInterval(LF._poll); LF.cerrar(); const f = LF._onCerrarPago; LF._onCerrarPago = null; if (f) f(); };
 LF.acc.simularQr = async el => { await LF.post('/pagos/simulador/qr/' + el.dataset.ref + '/pagar'); };
 
 LF.comprobante = async (ventaId) => {

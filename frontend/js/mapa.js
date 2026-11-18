@@ -83,17 +83,20 @@ LF.verPaypal = (pago, onPagado) => {
     <p class="sub">Se abrirá PayPal en otra pestaña para que apruebe el pago de <b>${LF.bs(pago.monto)}</b> (PayPal cobra en dólares; la conversión se hace al tipo de cambio de la tienda).</p>
     <p style="text-align:center"><a class="btn lg" href="${LF.esc(pago.qr_payload)}" target="_blank" rel="noopener" style="display:block;background:#0070ba">💳 Ir a PayPal</a></p>
     <div id="ppEstado" class="note">⏳ Esperando que complete el pago en PayPal…</div>
-    <div class="row noprint"><span class="sp"></span><button class="btn sec" data-act="cerrar">Cerrar</button></div>`);
+    <div class="row noprint"><span class="sp"></span><button class="btn sec" data-act="cerrarPago">Cerrar</button></div>`);
   clearInterval(LF._poll);
   LF._poll = setInterval(async () => {
     try {
       const p = await LF.get('/pagos/' + pago.id);
-      if (p.estado === 'confirmado') { clearInterval(LF._poll); const e = LF.$('#ppEstado'); if (e) { e.className = 'note ok'; e.textContent = '✅ Pago confirmado'; } LF.toast('Pago confirmado', 'ok'); setTimeout(() => { LF.cerrar(); onPagado && onPagado(p); }, 900); }
+      if (p.estado === 'confirmado') { clearInterval(LF._poll); LF._onCerrarPago = null; const e = LF.$('#ppEstado'); if (e) { e.className = 'note ok'; e.textContent = '✅ Pago confirmado'; } LF.toast('Pago confirmado', 'ok'); setTimeout(() => { LF.cerrar(); onPagado && onPagado(p); }, 900); }
       else if (p.estado === 'anulado' || p.estado === 'vencido') { clearInterval(LF._poll); const e = LF.$('#ppEstado'); if (e) { e.className = 'note bad'; e.textContent = 'El pago ya no está vigente. Genere uno nuevo.'; } }
     } catch (e) { clearInterval(LF._poll); }
   }, 2500);
 };
 LF.iniciarPago = async (ventaId, metodo, alTerminar) => {
-  const pago = await LF.post('/pagos', { venta_id: +ventaId, metodo }, { 'Idempotency-Key': LF.uuid() });
+  LF._onCerrarPago = () => LF.detallePedido(ventaId);                 // si cierra sin pagar: detalle con «Editar» y «Cancelar»
+  LF.modal(`<h2>Preparando su pago…</h2><p class="sub">Un momento, estamos generando su ${metodo === 'paypal' ? 'enlace de PayPal' : 'código QR'}.</p><p style="text-align:center;font-size:34px">⏳</p>`);
+  let pago;
+  try { pago = await LF.post('/pagos', { venta_id: +ventaId, metodo }, { 'Idempotency-Key': LF.uuid() }); } catch (e) { LF.cerrar(); LF._onCerrarPago = null; throw e; }
   if (metodo === 'paypal') LF.verPaypal(pago, alTerminar); else LF.verQr(pago, alTerminar);
 };

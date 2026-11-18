@@ -60,7 +60,7 @@ def confirmar(vid): return jsonify(EntregaService.confirmar(g.user, vid))
 
 
 @bp.put('/pedidos/<int:vid>/rechazar')
-@auth_required('cajero', 'administrador')
+@auth_required('cajero', 'administrador', 'empleado')
 def rechazar(vid): return jsonify(EntregaService.rechazar(g.user, vid, _json()))
 
 

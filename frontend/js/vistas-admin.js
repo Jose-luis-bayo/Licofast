@@ -98,23 +98,70 @@ LF.acc.formCategoria = () => LF.modal(`<h2>Nueva categoría</h2><form id="fcat">
 LF.acc.guardarCategoria = async () => { await LF.post('/categorias', LF.form('#fcat')); LF.cerrar(); return LF.render(true); };
 
 // ---- Promociones ----
+LF.TIPOS_PROMO = [['porcentaje', '% de descuento en un producto, categoría o todo el catálogo'], ['monto', 'Bs de descuento por unidad'], ['llevapaga', 'Lleva N paga M (2x1, 3x2…)'],
+  ['segunda', 'Segunda unidad con descuento'], ['pedido_pct', '% de descuento en el total del pedido'], ['pedido_monto', 'Bs de descuento en el total del pedido']];
+LF.DIAS = [[1, 'Lun'], [2, 'Mar'], [3, 'Mié'], [4, 'Jue'], [5, 'Vie'], [6, 'Sáb'], [7, 'Dom']];
+LF.promoTxt = x => {
+  const min = x.min_cantidad > 1 ? ` desde ${x.min_cantidad} unidades` : '';
+  const t = { porcentaje: `${x.valor} % de descuento${min}`, monto: `${LF.bs(x.valor)} menos por unidad${min}`, llevapaga: `Lleva ${x.lleva} paga ${x.paga}${min}`,
+    segunda: x.valor >= 100 ? 'Segunda unidad gratis' : `Segunda unidad ${x.valor} % menos`,
+    pedido_pct: `${x.valor} % en el total (compra desde ${LF.bs(x.minimo_pedido)})`, pedido_monto: `${LF.bs(x.valor)} menos en el total (compra desde ${LF.bs(x.minimo_pedido)})` }[x.tipo] || x.tipo;
+  const dias = x.dias ? ' · ' + x.dias.split(',').map(d => (LF.DIAS.find(y => y[0] == d) || [0, d])[1]).join(' ') : '';
+  const hora = x.hora_desde && x.hora_hasta ? ` · ${x.hora_desde}–${x.hora_hasta}` : '';
+  return t + dias + hora;
+};
 LF.rutas['/promociones'] = async () => {
   const [pr, prods, cats] = await Promise.all([LF.get('/promociones'), LF.get('/productos?todos=1'), LF.get('/categorias')]); LF.pp = { prods, cats };
-  return LF.pagina('Promociones y descuentos', 'Vigentes se aplican solas al catálogo, al carrito y al POS (CU-E09).', `<p><button class="btn" data-act="formPromo">+ Nueva promoción</button></p>
-  ${LF.tabla([{ t: 'Nombre', f: x => `<b>${LF.esc(x.nombre)}</b>` }, { t: 'Descuento', f: x => x.tipo === 'porcentaje' ? x.valor + ' %' : LF.bs(x.valor) }, { t: 'Aplica a', f: x => LF.esc(x.producto || x.categoria || 'Todos los productos') },
+  return LF.pagina('Promociones y descuentos', 'Las activas se aplican solas al catálogo, al carrito y al punto de venta. Puede activarlas o desactivarlas cuando quiera.', `<p><button class="btn" data-act="formPromo">+ Nueva promoción</button></p>
+  ${LF.tabla([{ t: 'Nombre', f: x => `<b>${LF.esc(x.nombre)}</b>${x.descripcion ? `<br><span class="sub">${LF.esc(x.descripcion)}</span>` : ''}` }, { t: 'Promoción', f: x => LF.esc(LF.promoTxt(x)) },
+   { t: 'Aplica a', f: x => LF.esc(x.tipo.startsWith('pedido') ? 'Total del pedido' : (x.producto || x.categoria || 'Todos los productos')) },
    { t: 'Vigencia', f: x => LF.esc(String(x.desde).slice(0, 10)) + ' → ' + LF.esc(String(x.hasta).slice(0, 10)) }, { t: 'Estado', f: x => x.activo ? '<span class="badge b-ok">activa</span>' : '<span class="badge b-bad">inactiva</span>' },
-   { t: '', f: x => `<button class="btn sm sec" data-act="formPromo" data-id="${x.id}">Editar</button> <button class="btn sm bad" data-act="bajaPromo" data-id="${x.id}">Eliminar</button>` }], pr)}`);
+   { t: '', f: x => `<button class="btn sm ${x.activo ? 'sec' : 'ok'}" data-act="alternarPromo" data-id="${x.id}" data-activo="${x.activo ? 0 : 1}">${x.activo ? 'Desactivar' : 'Activar'}</button> <button class="btn sm sec" data-act="formPromo" data-id="${x.id}">Editar</button> <button class="btn sm bad" data-act="bajaPromo" data-id="${x.id}">Eliminar</button>` }], pr, 'Aún no hay promociones.')}`);
+};
+LF.PRESETS = {
+  '2x1': { nombre: '2x1', tipo: 'llevapaga', lleva: 2, paga: 1 }, '3x2': { nombre: '3x2', tipo: 'llevapaga', lleva: 3, paga: 2 },
+  'Segunda al 50 %': { nombre: 'Segunda unidad al 50 %', tipo: 'segunda', valor: 50 }, 'Por categoría': { nombre: 'Descuento en la categoría', tipo: 'porcentaje', valor: 15 },
+  'Por cantidad': { nombre: 'Lleva más, paga menos', tipo: 'porcentaje', valor: 10, min_cantidad: 6 }, 'Compra grande': { nombre: 'Descuento por compra grande', tipo: 'pedido_pct', valor: 10, minimo_pedido: 300 },
+  'Happy hour': { nombre: 'Happy hour', tipo: 'porcentaje', valor: 20, hora_desde: '17:00', hora_hasta: '20:00', dias: '5,6' },
+};
+LF.promoCampos = () => {
+  const t = LF.$('#fpm [name=tipo]').value, ped = t.startsWith('pedido'), mostrar = (id, ok) => { const e = LF.$('#' + id); if (e) e.hidden = !ok; };
+  mostrar('pm-valor', t !== 'llevapaga'); mostrar('pm-lleva', t === 'llevapaga'); mostrar('pm-minped', ped); mostrar('pm-alcance', !ped); mostrar('pm-mincant', !ped);
+  const et = LF.$('#pm-valor label'); if (et) et.textContent = t === 'monto' || t === 'pedido_monto' ? 'Descuento (Bs)' : 'Descuento (%)';
+};
+LF.acc.promoTipo = () => LF.promoCampos();
+LF.acc.presetPromo = el => {
+  const pre = LF.PRESETS[el.dataset.p], f = LF.$('#fpm');
+  for (const [k, v] of Object.entries({ valor: '', lleva: '', paga: '', min_cantidad: 1, minimo_pedido: 0, hora_desde: '', hora_hasta: '', ...pre })) { const e = f.elements[k]; if (e) e.value = v; }
+  f.querySelectorAll('[name=dia]').forEach(c => c.checked = (pre.dias || '').split(',').includes(c.value)); LF.promoCampos();
 };
 LF.acc.formPromo = async el => {
-  const x = el.dataset.id ? (await LF.get('/promociones')).find(u => u.id == el.dataset.id) : {}; const hoy = new Date().toISOString().slice(0, 10);
-  LF.modal(`<h2>${x.id ? 'Editar' : 'Nueva'} promoción</h2><form id="fpm">${LF.campo('nombre', 'Nombre', 'text', x.nombre || '', 'required')}
-   <div class="f2"><div><label>Tipo</label><select name="tipo">${LF.opciones([['porcentaje', 'Porcentaje'], ['monto', 'Monto fijo (Bs)']], x.tipo)}</select></div><div>${LF.campo('valor', 'Valor', 'number', x.valor ?? '', 'step="0.01" min="0.01" required')}</div>
-   <div><label>Producto (opcional)</label><select name="producto_id">${LF.opciones(LF.pp.prods.map(p => [p.id, p.nombre]), x.producto_id, '—')}</select></div><div><label>Categoría (opcional)</label><select name="categoria_id">${LF.opciones(LF.pp.cats.map(p => [p.id, p.nombre]), x.categoria_id, '—')}</select></div>
-   <div>${LF.campo('desde', 'Desde', 'date', String(x.desde || hoy).slice(0, 10), 'required')}</div><div>${LF.campo('hasta', 'Hasta', 'date', String(x.hasta || hoy).slice(0, 10), 'required')}</div></div>
-   <label>Estado</label><select name="activo">${LF.opciones([[1, 'Activa'], [0, 'Inactiva']], x.activo ?? 1)}</select><p class="sub">Si no elige producto ni categoría, aplica a todo el catálogo.</p>
+  const x = el.dataset.id ? (await LF.get('/promociones')).find(u => u.id == el.dataset.id) : {}; const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`, hoy = iso(new Date()), mas = iso(new Date(Date.now() + 90 * 864e5));   // fecha local, no UTC
+  LF.modal(`<h2>${x.id ? 'Editar' : 'Nueva'} promoción</h2>
+   ${x.id ? '' : `<p class="sub" style="margin:0 0 6px">Plantillas rápidas:</p><div class="chips" style="margin-bottom:10px">${Object.keys(LF.PRESETS).map(k => `<button type="button" class="badge b-ok" style="cursor:pointer;border:0" data-act="presetPromo" data-p="${LF.esc(k)}">${LF.esc(k)}</button>`).join(' ')}</div>`}
+   <form id="fpm">${LF.campo('nombre', 'Nombre (lo ve el cliente)', 'text', x.nombre || '', 'required maxlength="100"')}
+   <label>Tipo de promoción</label><select name="tipo" data-act="promoTipo">${LF.opciones(LF.TIPOS_PROMO, x.tipo || 'porcentaje')}</select>
+   <div class="f2"><div id="pm-valor">${LF.campo('valor', 'Descuento', 'number', x.valor || '', 'step="0.01" min="0.01"')}</div>
+   <div id="pm-lleva"><div class="f2"><div>${LF.campo('lleva', 'Lleva', 'number', x.lleva || 2, 'min="2"')}</div><div>${LF.campo('paga', 'Paga', 'number', x.paga || 1, 'min="1"')}</div></div></div>
+   <div id="pm-minped">${LF.campo('minimo_pedido', 'Compra mínima (Bs)', 'number', x.minimo_pedido || 0, 'step="0.01" min="0"')}</div>
+   <div id="pm-mincant">${LF.campo('min_cantidad', 'Desde cuántas unidades', 'number', x.min_cantidad || 1, 'min="1"')}</div></div>
+   <div id="pm-alcance" class="f2"><div><label>Producto (opcional)</label><select name="producto_id">${LF.opciones(LF.pp.prods.map(p => [p.id, p.nombre]), x.producto_id, '—')}</select></div>
+   <div><label>Categoría (opcional)</label><select name="categoria_id">${LF.opciones(LF.pp.cats.map(p => [p.id, p.nombre]), x.categoria_id, '—')}</select></div></div>
+   <p class="sub" style="margin:2px 0 8px">Sin producto ni categoría: aplica a todo el catálogo.</p>
+   <div class="f2"><div>${LF.campo('desde', 'Desde', 'date', String(x.desde || hoy).slice(0, 10), 'required')}</div><div>${LF.campo('hasta', 'Hasta', 'date', String(x.hasta || mas).slice(0, 10), 'required')}</div></div>
+   <label>Solo estos días (opcional)</label><div class="row" style="gap:10px;flex-wrap:wrap">${LF.DIAS.map(([n, t]) => `<label style="margin:0;display:flex;gap:4px;align-items:center"><input type="checkbox" name="dia" value="${n}" style="width:auto" ${(x.dias || '').split(',').includes(String(n)) ? 'checked' : ''}> ${t}</label>`).join('')}</div>
+   <div class="f2"><div>${LF.campo('hora_desde', 'Desde la hora (opcional)', 'time', x.hora_desde || '')}</div><div>${LF.campo('hora_hasta', 'Hasta la hora', 'time', x.hora_hasta || '')}</div></div>
+   ${LF.campo('descripcion', 'Descripción (opcional)', 'text', x.descripcion || '', 'maxlength="160"')}
+   <label>Estado</label><select name="activo">${LF.opciones([[1, 'Activa'], [0, 'Inactiva']], x.activo ?? 1)}</select>
    <p class="row"><button class="btn" data-act="guardarPromo" data-id="${x.id || ''}">Guardar</button><button class="btn sec" data-act="cerrar">Cancelar</button></p></form>`, true);
+  LF.promoCampos();
 };
-LF.acc.guardarPromo = async el => { const f = LF.form('#fpm'); el.dataset.id ? await LF.put('/promociones/' + el.dataset.id, f) : await LF.post('/promociones', f); LF.cerrar(); LF.toast('Promoción guardada', 'ok'); return LF.render(true); };
+LF.acc.guardarPromo = async el => {
+  const f = LF.form('#fpm'); f.dias = [...document.querySelectorAll('#fpm [name=dia]:checked')].map(c => c.value).join(','); delete f.dia;
+  for (const k of ['producto_id', 'categoria_id', 'valor', 'lleva', 'paga', 'hora_desde', 'hora_hasta', 'descripcion']) if (f[k] === '') delete f[k];
+  el.dataset.id ? await LF.put('/promociones/' + el.dataset.id, f) : await LF.post('/promociones', f); LF.cerrar(); LF.toast('Promoción guardada', 'ok'); return LF.render(true);
+};
+LF.acc.alternarPromo = async el => { const r = await LF.put('/promociones/' + el.dataset.id + '/estado', { activo: +el.dataset.activo }); LF.toast(r.mensaje, 'ok'); return LF.render(true); };
 LF.acc.bajaPromo = async el => { if (!confirm('¿Eliminar la promoción?')) return; await LF.del('/promociones/' + el.dataset.id); return LF.render(true); };
 
 // ---- Pedidos y asignación ----

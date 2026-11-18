@@ -29,7 +29,7 @@ LF.rutas['/pedidos-online'] = async () => {
      <h2>En proceso (${curso.length})</h2>${curso.length ? `<div class="grid g2">${curso.map(p => LF.tarjetaPedido(p)).join('')}</div>` : '<div class="card empty">Sin pedidos en proceso</div>'}`);
 };
 LF.acc.confirmarPed = async el => { const r = await LF.put('/pedidos/' + el.dataset.id + '/confirmar'); LF.toast(r.mensaje, 'ok'); return LF.render(true); };
-LF.acc.rechazarPed = el => LF.modal(`<h2>Rechazar pedido #${el.dataset.id}</h2><p class="sub">Los productos volverán al inventario. Si el cliente ya pagó en línea habrá que reembolsarle.</p>
+LF.acc.rechazarPed = el => LF.modal(`<h2>Rechazar pedido #${el.dataset.id}</h2><p class="sub">Los productos volverán al inventario. Si el cliente ya pagó en línea, deberá escribirle por WhatsApp para devolverle el dinero (el cliente envía su QR).</p>
   <form id="frz">${LF.campo('motivo', 'Motivo (obligatorio)', 'text', '', 'required')}</form>
   <p class="row"><button class="btn bad" data-act="enviarRechazo" data-id="${el.dataset.id}">Rechazar pedido</button><button class="btn sec" data-act="cerrar">Cancelar</button></p>`);
 LF.acc.enviarRechazo = async el => { const f = LF.form('#frz'); if (!f.motivo) return LF.toast('Indique el motivo', 'bad');
@@ -42,7 +42,7 @@ LF.rutas['/preparar'] = async () => {
   const prep = lista.filter(p => p.estado === 'confirmado'), listos = lista.filter(p => ['preparado', 'en_camino'].includes(p.estado));
   const carga = `<div class="chips">${reps.map(r => `<span class="chip">🛵 ${LF.esc(r.nombre)} · <b>${r.por_salir}</b> por salir · <b>${r.en_camino}</b> en camino</span>`).join('') || '<span class="sub">No hay repartidores activos</span>'}</div>`;
   return LF.pagina('Pedidos a preparar', 'Alista los productos y libere el pedido: el sistema lo asigna al repartidor con menos carga. Solo bodega y administrador pueden cambiar de repartidor.',
-    `${carga}<h2>Por preparar (${prep.length})</h2>${prep.length ? `<div class="grid g2">${prep.map(p => LF.tarjetaPedido(p, `<button class="btn" data-act="prepararPed" data-id="${p.id}">📦 Preparar y liberar</button>`)).join('')}</div>` : '<div class="card empty">Nada por preparar por ahora</div>'}
-     <h2>Liberados (${listos.length})</h2>${listos.length ? `<div class="grid g2">${listos.map(p => LF.tarjetaPedido(p, `<label style="margin:0">Cambiar repartidor</label>${LF.selectorRepartidor(p, reps)}`)).join('')}</div>` : '<div class="card empty">Sin pedidos liberados</div>'}`);
+    `${carga}<h2>Por preparar (${prep.length})</h2>${prep.length ? `<div class="grid g2">${prep.map(p => LF.tarjetaPedido(p, `<button class="btn" data-act="prepararPed" data-id="${p.id}">📦 Preparar y liberar</button><button class="btn bad" data-act="rechazarPed" data-id="${p.id}">🚫 Cancelar pedido</button>`)).join('')}</div>` : '<div class="card empty">Nada por preparar por ahora</div>'}
+     <h2>Liberados (${listos.length})</h2>${listos.length ? `<div class="grid g2">${listos.map(p => LF.tarjetaPedido(p, `<label style="margin:0">Cambiar repartidor</label>${LF.selectorRepartidor(p, reps)}${p.estado === 'preparado' ? `<button class="btn bad sm" data-act="rechazarPed" data-id="${p.id}">🚫 Cancelar</button>` : ''}`)).join('')}</div>` : '<div class="card empty">Sin pedidos liberados</div>'}`);
 };
 LF.acc.prepararPed = async el => { const r = await LF.put('/pedidos/' + el.dataset.id + '/preparar'); LF.toast('📦 ' + r.mensaje, 'ok'); return LF.render(true); };

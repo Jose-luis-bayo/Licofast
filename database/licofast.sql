@@ -49,8 +49,16 @@ CREATE TABLE IF NOT EXISTS productos (
 CREATE TABLE IF NOT EXISTS promociones (
  id INT AUTO_INCREMENT PRIMARY KEY,
  nombre VARCHAR(100) NOT NULL,
- tipo ENUM('porcentaje','monto') NOT NULL,
- valor DECIMAL(10,2) NOT NULL,
+ tipo ENUM('porcentaje','monto','llevapaga','segunda','pedido_pct','pedido_monto') NOT NULL,
+ valor DECIMAL(10,2) NOT NULL DEFAULT 0,
+ lleva INT NULL,
+ paga INT NULL,
+ min_cantidad INT NOT NULL DEFAULT 1,
+ minimo_pedido DECIMAL(10,2) NOT NULL DEFAULT 0,
+ dias VARCHAR(20) NULL,
+ hora_desde TIME NULL,
+ hora_hasta TIME NULL,
+ descripcion VARCHAR(160) NULL,
  producto_id INT NULL,
  categoria_id INT NULL,
  desde DATE NOT NULL,
@@ -132,6 +140,7 @@ CREATE TABLE IF NOT EXISTS detalle_venta (
  producto_id INT NOT NULL,
  cantidad INT NOT NULL,
  precio_unitario DECIMAL(10,2) NOT NULL,
+ descuento DECIMAL(10,2) NOT NULL DEFAULT 0,
  FOREIGN KEY (venta_id) REFERENCES ventas(id) ON DELETE CASCADE,
  FOREIGN KEY (producto_id) REFERENCES productos(id) ON DELETE RESTRICT
 ) ENGINE=InnoDB;

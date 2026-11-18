@@ -581,3 +581,126 @@ def test_recompensa_cliente_frecuente(c, H):
     mis = c.get('/api/v1/mis-cupones', headers=H['cliente1']).get_json()
     assert any(x['origen'] == 'recompensa' and x['valor'] == 10 for x in mis)
     assert c.post('/api/v1/cupones/recompensas', headers=H['admin_api']).get_json()['emitidos'] == []   # un premio por periodo
+
+
+# ------------------------------------------------------------------ Cliente cancela / edita; bodega cancela
+def test_cliente_cancela_qr_pendiente_y_repone_stock(c, H):
+    pid = nuevo_producto(c, H, 10, 50)
+    d = pedido(c, H, pid, 2, metodo_pago='qr').get_json()
+    assert d['puede_cancelar'] is True and d['puede_editar'] is True
+    assert stock_de(pid) == 8
+    assert c.put(f"/api/v1/pedidos/{d['id']}/cancelar", headers=H['cliente1']).status_code == 200
+    assert stock_de(pid) == 10
+    assert c.put(f"/api/v1/pedidos/{d['id']}/cancelar", headers=H['cliente1']).status_code == 409   # ya procesado
+    assert c.put(f"/api/v1/pedidos/{d['id']}/cancelar", headers=H['cajero1']).status_code == 403    # solo el cliente
+
+
+def test_cliente_no_cancela_efectivo_ni_pagado(c, H):
+    pid = nuevo_producto(c, H, 10, 50)
+    ef = pedido(c, H, pid, 1, metodo_pago='efectivo').get_json()
+    assert ef['puede_cancelar'] is False
+    r = c.put(f"/api/v1/pedidos/{ef['id']}/cancelar", headers=H['cliente1'])
+    assert r.status_code == 409 and r.get_json()['error']['codigo'] == 'NO_CANCELABLE' and 'wa.me' in r.get_json()['error']['detalle']['whatsapp_url']
+    qr = pedido(c, H, pid, 1, metodo_pago='qr').get_json()
+    pg = c.post('/api/v1/pagos', json={'venta_id': qr['id'], 'metodo': 'qr'}, headers={**H['cliente1'], 'Idempotency-Key': 'k' + str(qr['id'])}).get_json()
+    assert c.post(f"/api/v1/pagos/simulador/qr/{pg['referencia']}/pagar", headers=H['cliente1']).status_code == 200
+    r = c.put(f"/api/v1/pedidos/{qr['id']}/cancelar", headers=H['cliente1'])
+    assert r.status_code == 409 and r.get_json()['error']['codigo'] == 'NO_CANCELABLE'
+    otro = c.get(f"/api/v1/pedidos/{qr['id']}", headers=H['cliente1']).get_json()
+    assert otro['puede_cancelar'] is False and 'wa.me' in otro['whatsapp_url']
+
+
+def test_cliente_edita_pedido_pendiente(c, H):
+    p1, p2 = nuevo_producto(c, H, 10, 10), nuevo_producto(c, H, 10, 20)
+    d = pedido(c, H, p1, 2, metodo_pago='qr', lat=-19.03, lng=-65.26).get_json()
+    n = c.put(f"/api/v1/pedidos/{d['id']}", json={'items': [{'producto_id': p1, 'cantidad': 1}, {'producto_id': p2, 'cantidad': 3}]}, headers=H['cliente1']).get_json()
+    assert n['id'] != d['id'] and n['total'] == 70 and n['metodo_pago'] == 'qr' and n['lat_entrega'] == -19.03
+    assert stock_de(p1) == 9 and stock_de(p2) == 7                              # stock repuesto y vuelto a reservar
+    assert sql('SELECT estado FROM ventas WHERE id=%s', (d['id'],))[0]['estado'] == 'no_entregado'
+    assert c.put(f"/api/v1/pedidos/{d['id']}", json={'items': [{'producto_id': p1, 'cantidad': 1}]}, headers=H['cliente1']).status_code == 409
+    # confirmado por caja ya no se edita
+    e = pedido(c, H, p1, 1).get_json()
+    c.put(f"/api/v1/pedidos/{e['id']}/confirmar", headers=H['cajero1'])
+    assert c.put(f"/api/v1/pedidos/{e['id']}", json={'items': [{'producto_id': p1, 'cantidad': 1}]}, headers=H['cliente1']).status_code == 409
+
+
+def test_bodega_cancela_pedido_y_cliente_ve_devolucion(c, H):
+    pid = nuevo_producto(c, H, 10, 40)
+    qr = pedido(c, H, pid, 1, metodo_pago='qr').get_json()
+    pg = c.post('/api/v1/pagos', json={'venta_id': qr['id'], 'metodo': 'qr'}, headers={**H['cliente1'], 'Idempotency-Key': 'b' + str(qr['id'])}).get_json()
+    c.post(f"/api/v1/pagos/simulador/qr/{pg['referencia']}/pagar", headers=H['cliente1'])
+    assert c.put(f"/api/v1/pedidos/{qr['id']}/confirmar", headers=H['cajero1']).status_code == 200
+    r = c.put(f"/api/v1/pedidos/{qr['id']}/rechazar", json={'motivo': 'No hay repartidores'}, headers=H['bodega1'])
+    assert r.status_code == 200 and r.get_json()['requiere_reembolso'] is True and 'WhatsApp' in r.get_json()['mensaje']
+    v = c.get(f"/api/v1/pedidos/{qr['id']}", headers=H['cliente1']).get_json()
+    assert v['estado'] == 'no_entregado' and v['devolucion_pendiente'] is True and 'wa.me' in v['whatsapp_url']
+
+
+# ------------------------------------------------------------------ Promociones avanzadas
+def promo(c, H, **d):
+    hoy = __import__('datetime').date.today()
+    base = {'nombre': 'Promo test', 'desde': str(hoy - __import__('datetime').timedelta(days=1)), 'hasta': str(hoy + __import__('datetime').timedelta(days=30))}
+    r = c.post('/api/v1/promociones', json={**base, **d}, headers=H['admin_api'])
+    assert r.status_code == 201, r.get_json()
+    return r.get_json()['id']
+
+
+def cotiza(c, items):
+    return c.post('/api/v1/carrito/cotizar', json={'items': items}).get_json()
+
+
+def test_promo_2x1_lleva_paga_y_se_cobra_bien(c, H):
+    pid = nuevo_producto(c, H, 20, 50)
+    pr = promo(c, H, nombre='2x1 test', tipo='llevapaga', lleva=2, paga=1, producto_id=pid)
+    q = cotiza(c, [{'producto_id': pid, 'cantidad': 3}])           # 3 unidades: una pareja gratis
+    assert q['total'] == 100 and q['descuento'] == 50 and q['lineas'][0]['promocion'] == '2x1 test'
+    assert cotiza(c, [{'producto_id': pid, 'cantidad': 1}])['total'] == 50          # con 1 unidad no aplica
+    d = pedido(c, H, pid, 4).get_json()                                              # 4 unidades → paga 2
+    assert d['total'] == 100 and d['descuento'] == 100
+    assert d['items'][0]['subtotal'] == 100 and stock_de(pid) == 16
+    c.put(f'/api/v1/promociones/{pr}/estado', json={'activo': False}, headers=H['admin_api'])   # desactivada: precio normal
+    assert cotiza(c, [{'producto_id': pid, 'cantidad': 4}])['total'] == 200
+    assert c.put(f'/api/v1/promociones/{pr}/estado', json={'activo': True}, headers=H['admin_api']).status_code == 200
+    assert cotiza(c, [{'producto_id': pid, 'cantidad': 4}])['total'] == 100
+
+
+def test_promo_segunda_unidad_y_volumen(c, H):
+    a, b = nuevo_producto(c, H, 20, 40), nuevo_producto(c, H, 20, 100)
+    promo(c, H, nombre='Segunda 50', tipo='segunda', valor=50, producto_id=a)
+    assert cotiza(c, [{'producto_id': a, 'cantidad': 2}])['total'] == 60
+    promo(c, H, nombre='Desde 3 -20%', tipo='porcentaje', valor=20, min_cantidad=3, producto_id=b)
+    assert cotiza(c, [{'producto_id': b, 'cantidad': 2}])['total'] == 200          # aún no llega a 3
+    assert cotiza(c, [{'producto_id': b, 'cantidad': 3}])['total'] == 240
+
+
+def test_promo_por_categoria_y_total_del_pedido(c, H):
+    pid = nuevo_producto(c, H, 20, 100)
+    cat = c.post('/api/v1/categorias', json={'nombre': 'Cat promo ' + str(pid)}, headers=H['admin_api']).get_json()['id']
+    sql('UPDATE productos SET categoria_id=%s WHERE id=%s', (cat, pid))
+    promo(c, H, nombre='Categoría -30%', tipo='porcentaje', valor=30, categoria_id=cat)
+    assert cotiza(c, [{'producto_id': pid, 'cantidad': 1}])['total'] == 70
+    ped = promo(c, H, nombre='Compra mayor', tipo='pedido_pct', valor=10, minimo_pedido=200)
+    q = cotiza(c, [{'producto_id': pid, 'cantidad': 4}])                            # 4×70=280 ≥ 200 → −10 %
+    assert q['total'] == 252 and q['promocion_pedido'] == 'Compra mayor' and q['descuento_pedido'] == 28
+    assert cotiza(c, [{'producto_id': pid, 'cantidad': 2}])['total'] == 140         # 140 < 200: sin descuento de pedido
+    assert pedido(c, H, pid, 4).get_json()['total'] == 252
+    c.delete(f'/api/v1/promociones/{ped}', headers=H['admin_api'])
+
+
+def test_promo_dias_y_horario_y_validaciones(c, H):
+    import datetime
+    pid = nuevo_producto(c, H, 20, 100)
+    hoy = (datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-4)))).isoweekday()
+    otro = (hoy % 7) + 1
+    promo(c, H, nombre='Solo otro día', tipo='porcentaje', valor=50, producto_id=pid, dias=str(otro))
+    assert cotiza(c, [{'producto_id': pid, 'cantidad': 1}])['total'] == 100
+    promo(c, H, nombre='Hoy', tipo='porcentaje', valor=50, producto_id=pid, dias=f'{hoy},{otro}')
+    assert cotiza(c, [{'producto_id': pid, 'cantidad': 1}])['total'] == 50
+    ayer = {'nombre': 'x', 'desde': '2026-01-01', 'hasta': '2026-12-31'}
+    for malo in ({'tipo': 'llevapaga', 'lleva': 2, 'paga': 2}, {'tipo': 'porcentaje', 'valor': 150}, {'tipo': 'raro', 'valor': 5},
+                 {'tipo': 'porcentaje', 'valor': 5, 'dias': '9'}, {'tipo': 'porcentaje', 'valor': 5, 'hora_desde': '18:00'}):
+        assert c.post('/api/v1/promociones', json={**ayer, **malo}, headers=H['admin_api']).status_code == 422, malo
+    lst = c.get('/api/v1/promociones', headers=H['admin_api']).get_json()
+    assert any(x['nombre'] == 'Hoy' and x['dias'] for x in lst)
+    assert c.put('/api/v1/promociones/999999/estado', json={'activo': 1}, headers=H['admin_api']).status_code == 404
+    assert c.put('/api/v1/promociones/1/estado', json={'activo': 1}, headers=H['cliente1']).status_code == 403

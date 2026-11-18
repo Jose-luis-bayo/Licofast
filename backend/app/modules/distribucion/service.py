@@ -69,7 +69,7 @@ class EntregaService:
         r = {'mensaje': 'Pedido rechazado; el stock volvió al inventario'}
         if pagado:
             r['requiere_reembolso'] = True
-            r['mensaje'] += '. El cliente ya había pagado: realice el reembolso.'
+            r['mensaje'] += '. El cliente ya había pagado: debe escribirle por WhatsApp para devolverle el dinero (el cliente envía su QR).'
         return r
 
     # ---- Etapa 2: bodega ----

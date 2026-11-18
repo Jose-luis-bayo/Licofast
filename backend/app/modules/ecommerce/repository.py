@@ -69,23 +69,30 @@ class CategoriaRepository:
 
 
 class PromocionRepository:
+    CAMPOS = ('nombre', 'tipo', 'valor', 'lleva', 'paga', 'min_cantidad', 'minimo_pedido', 'dias', 'hora_desde', 'hora_hasta', 'descripcion',
+              'producto_id', 'categoria_id', 'desde', 'hasta', 'activo')
+
     @staticmethod
-    def vigentes(cur): return all_(cur, 'SELECT * FROM promociones WHERE activo=1 AND CURDATE() BETWEEN desde AND hasta')
+    def vigentes(cur, hoy):      # hoy = fecha local de Bolivia (el servidor puede estar en UTC)
+        return all_(cur, 'SELECT * FROM promociones WHERE activo=1 AND %s BETWEEN desde AND hasta', (hoy,))
 
     @staticmethod
     def todas(cur):
         return all_(cur, 'SELECT pr.*, p.nombre AS producto, c.nombre AS categoria FROM promociones pr LEFT JOIN productos p ON p.id=pr.producto_id '
-                         'LEFT JOIN categorias c ON c.id=pr.categoria_id ORDER BY pr.id DESC')
+                         'LEFT JOIN categorias c ON c.id=pr.categoria_id ORDER BY pr.activo DESC, pr.id DESC')
 
     @staticmethod
     def insertar(cur, d):
-        return run(cur, 'INSERT INTO promociones(nombre,tipo,valor,producto_id,categoria_id,desde,hasta,activo) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)',
-                   (d['nombre'], d['tipo'], d['valor'], d['producto_id'], d['categoria_id'], d['desde'], d['hasta'], d['activo']))
+        c = PromocionRepository.CAMPOS
+        return run(cur, f"INSERT INTO promociones({','.join(c)}) VALUES({','.join(['%s'] * len(c))})", [d[k] for k in c])
 
     @staticmethod
     def actualizar(cur, pid, d):
-        run(cur, 'UPDATE promociones SET nombre=%s,tipo=%s,valor=%s,producto_id=%s,categoria_id=%s,desde=%s,hasta=%s,activo=%s WHERE id=%s',
-            (d['nombre'], d['tipo'], d['valor'], d['producto_id'], d['categoria_id'], d['desde'], d['hasta'], d['activo'], pid))
+        c = PromocionRepository.CAMPOS
+        run(cur, f"UPDATE promociones SET {','.join(k + '=%s' for k in c)} WHERE id=%s", [*[d[k] for k in c], pid])
+
+    @staticmethod
+    def activar(cur, pid, activo): run(cur, 'UPDATE promociones SET activo=%s WHERE id=%s', (activo, pid))
 
     @staticmethod
     def eliminar(cur, pid): run(cur, 'DELETE FROM promociones WHERE id=%s', (pid,))
@@ -104,8 +111,8 @@ class VentaRepository:
         return run(cur, f"INSERT INTO ventas({','.join(cols)}) VALUES({','.join(['%s'] * len(cols))})", [d[c] for c in cols])
 
     @staticmethod
-    def insertar_detalle(cur, venta_id, pid, cant, precio):
-        run(cur, 'INSERT INTO detalle_venta(venta_id,producto_id,cantidad,precio_unitario) VALUES(%s,%s,%s,%s)', (venta_id, pid, cant, precio))
+    def insertar_detalle(cur, venta_id, pid, cant, precio, descuento=0):
+        run(cur, 'INSERT INTO detalle_venta(venta_id,producto_id,cantidad,precio_unitario,descuento) VALUES(%s,%s,%s,%s,%s)', (venta_id, pid, cant, precio, descuento))
 
     @staticmethod
     def bloquear(cur, vid): return one(cur, 'SELECT * FROM ventas WHERE id=%s FOR UPDATE', (vid,))
@@ -115,7 +122,7 @@ class VentaRepository:
 
     @staticmethod
     def detalle(cur, vid):
-        return all_(cur, 'SELECT d.producto_id,p.nombre,d.cantidad,d.precio_unitario,(d.cantidad*d.precio_unitario) AS subtotal '
+        return all_(cur, 'SELECT d.producto_id,p.nombre,d.cantidad,d.precio_unitario,(d.cantidad*d.precio_unitario-d.descuento) AS subtotal, d.descuento '
                          'FROM detalle_venta d JOIN productos p ON p.id=d.producto_id WHERE d.venta_id=%s ORDER BY d.id', (vid,))
 
     @staticmethod

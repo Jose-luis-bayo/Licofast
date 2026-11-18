@@ -67,6 +67,16 @@ def migrar():
         # --- pagos: nuevo método PayPal
         if 'paypal' not in _tipo(cur, 'pagos', 'metodo'):
             run(cur, "ALTER TABLE pagos MODIFY COLUMN metodo ENUM('efectivo','qr','paypal') NOT NULL")
+        # --- promociones avanzadas (2x1, segunda unidad, por cantidad, al total del pedido, días y horario)
+        if 'llevapaga' not in _tipo(cur, 'promociones', 'tipo'):
+            run(cur, "ALTER TABLE promociones MODIFY COLUMN tipo ENUM('porcentaje','monto','llevapaga','segunda','pedido_pct','pedido_monto') NOT NULL")
+        run(cur, 'ALTER TABLE promociones MODIFY COLUMN valor DECIMAL(10,2) NOT NULL DEFAULT 0')     # el «lleva N paga M» no usa valor
+        for col, ddl in (('lleva', 'INT NULL'), ('paga', 'INT NULL'), ('min_cantidad', 'INT NOT NULL DEFAULT 1'), ('minimo_pedido', 'DECIMAL(10,2) NOT NULL DEFAULT 0'),
+                         ('dias', 'VARCHAR(20) NULL'), ('hora_desde', 'TIME NULL'), ('hora_hasta', 'TIME NULL'), ('descripcion', 'VARCHAR(160) NULL')):
+            if not _columna(cur, 'promociones', col):
+                run(cur, f'ALTER TABLE promociones ADD COLUMN {col} {ddl}')
+        if not _columna(cur, 'detalle_venta', 'descuento'):
+            run(cur, 'ALTER TABLE detalle_venta ADD COLUMN descuento DECIMAL(10,2) NOT NULL DEFAULT 0')
         # --- cupones de descuento, vales personales y recompensas
         for ddl in DDL_CUPONES.split(';'):
             if ddl.strip():

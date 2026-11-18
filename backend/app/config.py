@@ -48,6 +48,7 @@ class Config:
     PAYPAL_CLIENT_ID = env('PAYPAL_CLIENT_ID', '')
     PAYPAL_SECRET = env('PAYPAL_SECRET', '')
     PAYPAL_TASA_BOB = float(env('PAYPAL_TASA_BOB', '6.96'))   # Bs por 1 USD (PayPal cobra en dólares)
+    WHATSAPP_NEGOCIO = env('WHATSAPP_NEGOCIO', '59161885077')   # número del cajero/negocio (devoluciones y cancelaciones)
     PUBLIC_URL = env('PUBLIC_URL', '')   # p. ej. https://licofast-phvl.onrender.com (para el retorno de PayPal)
     PEDIDO_TTL_MIN = int(env('PEDIDO_TTL_MIN', '360'))
     MYSQLDUMP_PATH = env('MYSQLDUMP_PATH', 'mysqldump')
