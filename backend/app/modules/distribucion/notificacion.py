@@ -70,6 +70,12 @@ class NotificacionService:
         return WhatsAppClient.enviar(telefono, msg)
 
     @staticmethod
+    def url_pdf(vid):
+        from ...config import Config
+        from ..ecommerce.service import PedidoService
+        return f"{(Config.PUBLIC_URL or 'http://localhost:5000').rstrip('/')}/api/v1/kiosko/comprobante/{vid}/{PedidoService.acceso_kiosko(vid)}"
+
+    @staticmethod
     def texto_factura(venta, items, numero=None):
         l = ['🍾 *LicoFast - Comprobante de su compra*', f"Cliente: {venta.get('factura_nombre')}", f"NIT/CI: {venta.get('factura_nit')}",
              f"Pedido #{venta.get('id')}" + (f" · Comprobante {numero}" if numero else ''), '']
@@ -80,6 +86,7 @@ class NotificacionService:
         l.append(f"\n💰 *Total: Bs {float(venta.get('total', 0)):.2f}* ({'✅ pagado' if venta.get('estado_pago') == 'pagado' else 'pendiente'})")
         l.append(f"\n🔑 *Código de retiro: {venta.get('codigo_retiro')}*")
         l.append('Retire su pedido en bodega presentando este código y su documento (mayores de 18 años). ¡Gracias!')
+        l.append(f"\n📄 *Descargue su comprobante en PDF:* {NotificacionService.url_pdf(venta.get('id'))}")
         l.append('_Comprobante de venta. No es una factura fiscal (SIN)._')
         return '\n'.join(l)
 
@@ -88,8 +95,7 @@ class NotificacionService:
         tel = WhatsAppClient.normalizar_telefono(venta.get('factura_telefono'))
         if not tel:
             return None
-        v_ = dict(venta, codigo_retiro=venta.get('codigo_retiro') or '(ver pantalla del quiosco)')
-        return f'https://wa.me/{tel}?text=' + quote(NotificacionService.texto_factura(v_, items))
+        return f'https://wa.me/{tel}?text=' + quote(NotificacionService.texto_factura(venta, items))
 
     @staticmethod
     def factura_retiro(venta_id=None, **_):

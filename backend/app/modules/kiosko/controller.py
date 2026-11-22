@@ -3,7 +3,7 @@ Seguridad: la app del quiosco envía la clave compartida X-Kiosko-Clave (KIOSKO_
 leer/pagar/cancelar un pedido concreto, el token X-Kiosko-Acceso que el servidor entregó al crearlo (HMAC por pedido)."""
 import hmac
 from functools import wraps
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, Response, jsonify, request
 from ...config import Config
 from ...core.errors import AppError, no_autenticado, no_encontrado
 from ...core.idempotencia import idempotente
@@ -30,6 +30,11 @@ def kiosko_requerido(f):
     return w
 
 
+def _con_pdf(r):
+    r['comprobante_url'] = f"{_base_publica()}/api/v1/kiosko/comprobante/{r['id']}/{r['acceso']}"
+    return r
+
+
 def _acceso(vid):
     if not hmac.compare_digest(request.headers.get('X-Kiosko-Acceso', ''), PedidoService.acceso_kiosko(vid)):
         raise no_encontrado('Pedido no encontrado')
@@ -38,14 +43,21 @@ def _acceso(vid):
 @bp.post('/pedidos')
 @kiosko_requerido
 @idempotente
-def crear(): return jsonify(PedidoService.crear_kiosko(_json())), 201
+def crear(): return jsonify(_con_pdf(PedidoService.crear_kiosko(_json()))), 201
 
 
 @bp.get('/pedidos/<int:vid>')
 @kiosko_requerido
 def obtener(vid):
     _acceso(vid)
-    return jsonify(PedidoService.obtener_kiosko(vid))
+    return jsonify(_con_pdf(PedidoService.obtener_kiosko(vid)))
+
+
+@bp.get('/comprobante/<int:vid>/<token>')
+def comprobante(vid, token):
+    """Enlace público del comprobante (PDF). Lo protege el token HMAC del pedido, que solo conoce el cliente."""
+    pdf = PedidoService.comprobante_kiosko(vid, token)
+    return Response(pdf, mimetype='application/pdf', headers={'Content-Disposition': f'inline; filename="comprobante-licofast-{vid}.pdf"'})
 
 
 @bp.post('/pedidos/<int:vid>/pago')

@@ -597,6 +597,22 @@ class PedidoService:
         return r
 
     @staticmethod
+    def comprobante_kiosko(vid, token):
+        import hmac
+        from ..kiosko.pdf import comprobante_pdf
+        if not hmac.compare_digest(str(token), PedidoService.acceso_kiosko(vid)):
+            raise no_encontrado('Comprobante no encontrado')
+        with read() as cur:
+            venta = V.por_id(cur, vid)
+            if not venta or venta['tipo_venta'] != 'retiro':
+                raise no_encontrado('Comprobante no encontrado')
+            if venta['estado_pago'] != 'pagado':
+                raise conflicto('SIN_PAGO', 'El comprobante estará disponible cuando el pedido esté pagado')
+            items = [_num(i) for i in V.detalle(cur, vid)]
+            comp = one(cur, 'SELECT numero FROM comprobantes WHERE venta_id=%s ORDER BY id DESC LIMIT 1', (vid,))
+        return comprobante_pdf(_num(dict(venta)), items, comp['numero'] if comp else None)
+
+    @staticmethod
     def cancelar_kiosko(vid):
         from ..pagos.facade import PagosFacade
         with transaction() as cur:

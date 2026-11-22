@@ -2,7 +2,7 @@
 from ...db import one, all_, run
 
 BASE = ("SELECT v.id,v.total,v.estado,v.estado_pago,IF(v.estado_pago='pagado',0,v.total) AS a_cobrar,v.direccion_entrega,v.referencia_entrega,v.telefono_contacto,"
-        "v.observacion_entrega,v.fecha_entrega,v.created_at,v.repartidor_id,v.canal,v.lat_entrega,v.lng_entrega,v.metodo_pago,v.confirmado_en,v.preparado_en,v.tipo_venta,v.factura_nombre,v.factura_nit,v.factura_telefono,"
+        "v.observacion_entrega,v.fecha_entrega,v.created_at,v.repartidor_id,v.canal,v.lat_entrega,v.lng_entrega,v.metodo_pago,v.confirmado_en,v.preparado_en,v.tipo_venta,v.factura_nombre,v.factura_nit,v.factura_telefono,v.codigo_retiro,"
         "CONCAT(c.nombre,' ',c.apellido) AS cliente,CONCAT(r.nombre,' ',r.apellido) AS repartidor "
         "FROM ventas v LEFT JOIN usuarios c ON c.id=v.usuario_id LEFT JOIN usuarios r ON r.id=v.repartidor_id WHERE v.tipo_venta IN ('delivery','retiro') AND ")
 

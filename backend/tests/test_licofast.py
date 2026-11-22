@@ -760,6 +760,8 @@ def test_kiosko_flujo_completo(c, H, K, metodo):
     cola = c.get('/api/v1/pedidos/online', headers=H['bodega1']).get_json()
     fila = next(x for x in cola if x['id'] == vid)
     assert fila['tipo_venta'] == 'retiro' and 'codigo_retiro' not in fila and fila['whatsapp_factura_url'].startswith('https://wa.me/59171234567')
+    assert 'codigo_retiro' not in fila and 'C%C3%B3digo%20de%20retiro%3A%20'+p['codigo_retiro'] in fila['whatsapp_factura_url'].replace('%2A','')   # el mensaje al cliente lleva el código
+    assert '/api/v1/kiosko/comprobante/' in __import__('urllib.parse').parse.unquote(fila['whatsapp_factura_url'])
     assert vid not in [x['id'] for x in c.get('/api/v1/pedidos/online', headers=H['cajero1']).get_json()]   # caja no lo ve
     assert c.put(f'/api/v1/pedidos/{vid}/entregar-retiro', json={'codigo': p['codigo_retiro']}, headers=H['bodega1']).status_code == 409   # aún no preparado
     assert c.put(f'/api/v1/pedidos/{vid}/preparar', headers=H['bodega1']).status_code == 200
@@ -809,3 +811,16 @@ def test_kiosko_pedido_sin_pagar_vence(c, H, K, monkeypatch):
     d = c.get(f"/api/v1/kiosko/pedidos/{p['id']}", headers=A).get_json()
     assert d['estado'] == 'no_entregado'
     assert sql('SELECT stock FROM productos WHERE id=%s', (pid,))[0]['stock'] == 20
+
+
+def test_kiosko_comprobante_pdf(c, H, K):
+    pid = nuevo_producto(c, H, 20, 10)
+    p = kpedido(c, K, pid, 2, 'tarjeta').get_json(); A = {**K, 'X-Kiosko-Acceso': p['acceso']}
+    assert p['comprobante_url'].endswith(f"/comprobante/{p['id']}/{p['acceso']}")
+    ruta = f"/api/v1/kiosko/comprobante/{p['id']}/{p['acceso']}"
+    assert c.get(ruta).status_code == 409                                                         # aún sin pagar
+    c.post(f"/api/v1/kiosko/pedidos/{p['id']}/pago", json={'metodo': 'tarjeta'}, headers=A)
+    c.post(f"/api/v1/kiosko/pedidos/{p['id']}/simular", headers=A)
+    r = c.get(ruta)
+    assert r.status_code == 200 and r.mimetype == 'application/pdf' and r.data.startswith(b'%PDF') and p['codigo_retiro'].encode() in r.data
+    assert c.get(f"/api/v1/kiosko/comprobante/{p['id']}/{'0' * 24}").status_code == 404           # token falso

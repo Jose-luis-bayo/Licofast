@@ -41,6 +41,7 @@ class EntregaService:
                 f['items'] = [_num(i) for i in ECO.detalle(cur, f['id'])]
                 if f['tipo_venta'] == 'retiro':
                     f['whatsapp_factura_url'] = notificacion.NotificacionService.url_factura(f, f['items'])
+                f.pop('codigo_retiro', None)                           # bodega no ve el código en pantalla: lo debe decir el cliente
         return filas
 
     @staticmethod
