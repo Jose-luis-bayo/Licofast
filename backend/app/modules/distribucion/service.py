@@ -33,8 +33,14 @@ class EntregaService:
         PedidoService.cancelar_vencidos()
         with read() as cur:
             filas = [_num(f) for f in E.online(cur)]
+            if user['rol'] == 'cajero':                                     # caja no maneja el autoservicio (se cobra en la pantalla)
+                filas = [f for f in filas if f['tipo_venta'] != 'retiro']
+            else:                                                           # bodega solo ve retiros ya pagados
+                filas = [f for f in filas if f['tipo_venta'] != 'retiro' or f['estado'] in ('confirmado', 'preparado')]
             for f in filas:
                 f['items'] = [_num(i) for i in ECO.detalle(cur, f['id'])]
+                if f['tipo_venta'] == 'retiro':
+                    f['whatsapp_factura_url'] = notificacion.NotificacionService.url_factura(f, f['items'])
         return filas
 
     @staticmethod
@@ -59,12 +65,15 @@ class EntregaService:
     def rechazar(user, vid, d):
         motivo = v.texto(d, 'motivo', max_len=200)
         with transaction() as cur:
-            venta = EntregaService._delivery_abierto(cur, vid)
+            venta = EntregaService._pedido_abierto(cur, vid)
+            if venta['tipo_venta'] == 'retiro' and user['rol'] == 'cajero':
+                raise prohibido('Los pedidos del quiosco los gestiona bodega')
             if venta['estado'] not in ('pendiente', 'confirmado', 'preparado'):
                 raise conflicto('ETAPA_INVALIDA', 'Solo se puede rechazar un pedido que aún no salió a reparto')
             pagado = venta['estado_pago'] == 'pagado'
             PagosFacade.anular_pagos_de_venta(cur, vid, 'Pedido rechazado: ' + motivo)
             ECO.cancelar_venta(cur, vid, 'Rechazado: ' + motivo, user['id'])
+        telefono = venta.get('factura_telefono') or venta.get('telefono_contacto')
         bus.publish('PedidoRechazado', usuario_id=user['id'], entidad='venta', entidad_id=vid, detalle={'motivo': motivo})
         r = {'mensaje': 'Pedido rechazado; el stock volvió al inventario'}
         if pagado:
@@ -77,8 +86,12 @@ class EntregaService:
     def preparar(user, vid):
         """Bodega alista y libera el pedido; el sistema lo asigna al repartidor con menos carga."""
         with transaction() as cur:
-            venta = EntregaService._delivery_abierto(cur, vid)
-            EstadoPedido.validar(venta['estado'], 'preparado')
+            venta = EntregaService._pedido_abierto(cur, vid)
+            EstadoPedido.validar(venta['estado'], 'preparado', venta['tipo_venta'])
+            if venta['tipo_venta'] == 'retiro':
+                ECO.actualizar_venta(cur, vid, {'estado': 'preparado', 'preparado_en': datetime.datetime.now(), 'preparado_por': user['id']})
+                bus.publish('PedidoPreparado', usuario_id=user['id'], entidad='venta', entidad_id=vid, detalle={'retiro': True})
+                return {'mensaje': 'Pedido listo para retiro: pídale al cliente su código de 4 dígitos', 'estado': 'preparado'}
             rep_id = venta['repartidor_id']
             if rep_id:                                 # el administrador ya lo había asignado a mano
                 rep = U.por_id(cur, rep_id)
@@ -99,6 +112,30 @@ class EntregaService:
         with read() as cur:
             filas = E.historial(cur, user['id'] if user['rol'] == 'repartidor' else None)
         return [_num(f) for f in filas]
+
+    @staticmethod
+    def entregar_retiro(user, vid, d):
+        """Bodega entrega al cliente del quiosco verificando su código de retiro (el sistema ya lo cobró en pantalla)."""
+        codigo = str(d.get('codigo') or '').strip()
+        with transaction() as cur:
+            venta = ECO.bloquear_venta(cur, vid)
+            if not venta or venta['tipo_venta'] != 'retiro':
+                raise no_encontrado('Pedido de retiro no encontrado')
+            EstadoPedido.validar(venta['estado'], 'entregada', 'retiro')
+            if venta['estado_pago'] != 'pagado':
+                raise conflicto('PAGO_PENDIENTE', 'El pedido no figura como pagado')
+            if not codigo or codigo != venta['codigo_retiro']:
+                raise invalido('El código de retiro no coincide. Pídale al cliente el código que aparece en la pantalla o en su WhatsApp.', {'campo': 'codigo'}, codigo='CODIGO_INCORRECTO')
+            ECO.actualizar_venta(cur, vid, {'estado': 'entregada', 'fecha_entrega': datetime.datetime.now(), 'observacion_entrega': 'Retirado en bodega'})
+        bus.publish('PedidoEntregado', usuario_id=user['id'], entidad='venta', entidad_id=vid, telefono=venta['telefono_contacto'], detalle={'retiro': True})
+        return {'mensaje': 'Pedido entregado al cliente', 'estado': 'entregada'}
+
+    @staticmethod
+    def _pedido_abierto(cur, vid):
+        venta = ECO.bloquear_venta(cur, vid)
+        if not venta or venta['tipo_venta'] not in ('delivery', 'retiro'):
+            raise no_encontrado('Pedido no encontrado')
+        return venta
 
     @staticmethod
     def _delivery_abierto(cur, vid):

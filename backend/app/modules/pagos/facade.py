@@ -28,4 +28,10 @@ class PagosFacade:
         return {k: (float(x) if hasattr(x, 'quantize') else x) for k, x in p.items()}
 
     @staticmethod
+    def iniciar_kiosko(venta_id, metodo, base_url=''): return PagoService.iniciar_kiosko(venta_id, metodo, base_url)
+
+    @staticmethod
+    def simular_kiosko(venta_id): return PagoService.simular_kiosko(venta_id)
+
+    @staticmethod
     def expirar_vencidos(): return PagoService.expirar_vencidos()

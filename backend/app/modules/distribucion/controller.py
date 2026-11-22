@@ -69,6 +69,11 @@ def rechazar(vid): return jsonify(EntregaService.rechazar(g.user, vid, _json()))
 def preparar(vid): return jsonify(EntregaService.preparar(g.user, vid))
 
 
+@bp.put('/pedidos/<int:vid>/entregar-retiro')
+@auth_required('empleado', 'administrador')
+def entregar_retiro(vid): return jsonify(EntregaService.entregar_retiro(g.user, vid, _json()))
+
+
 @bp.put('/pedidos/<int:vid>/asignacion')
 @auth_required('administrador', 'empleado')
 def asignar(vid): return jsonify(EntregaService.asignar(g.user, vid, _json()))

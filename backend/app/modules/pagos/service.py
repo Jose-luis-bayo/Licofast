@@ -188,6 +188,60 @@ class PagoService:
             bus.publish('PagoConfirmado', usuario_id=user['id'], entidad='pago', entidad_id=pid, venta_id=venta_id, detalle={'metodo': 'efectivo'})
         return pago
 
+    # ------------------------- Quiosco -------------------------
+    @staticmethod
+    def iniciar_kiosko(venta_id, metodo, base_url=''):
+        if metodo not in ('qr', 'paypal', 'tarjeta'):
+            raise invalido('El método debe ser «qr», «tarjeta» o «paypal»', {'campo': 'metodo'})
+        with transaction() as cur:
+            venta = ECO.bloquear_venta(cur, venta_id)
+            if not venta or venta['tipo_venta'] != 'retiro':
+                raise no_encontrado('Pedido no encontrado')
+            PagoService._cobrable(venta)
+            ECO.actualizar_venta(cur, venta_id, {'metodo_pago': metodo})
+            if metodo == 'paypal':
+                pid = PagoService._paypal_en_tx(cur, venta, base_url)
+            elif metodo == 'qr':
+                pid = PagoService._qr_en_tx(cur, venta)
+            else:
+                existente = None
+                for p in R.de_venta(cur, venta_id, lock=True):
+                    if p['estado'] == 'pendiente':
+                        if p['metodo'] == 'tarjeta' and not existente:
+                            existente = p['id']
+                        else:
+                            R.actualizar(cur, p['id'], {'estado': 'anulado', 'motivo_anulacion': 'Reemplazado por otro método de pago'})
+                pid = existente or ESTRATEGIAS['tarjeta'].iniciar(cur, venta_id, venta['total'])
+            pago = _num(R.por_id(cur, pid))
+        bus.publish('PagoIniciado', usuario_id=None, entidad='pago', entidad_id=pid, detalle={'venta_id': venta_id, 'metodo': metodo})
+        return pago
+
+    @staticmethod
+    def simular_kiosko(venta_id):
+        """Botón de PRUEBA del quiosco: confirma el pago pendiente como lo haría el banco/PayPal/terminal. Solo en modo simulado."""
+        with read() as cur:
+            venta = ECO.venta(cur, venta_id)
+            if not venta or venta['tipo_venta'] != 'retiro':
+                raise no_encontrado('Pedido no encontrado')
+            p = R.ultimo(cur, venta_id)
+        if not p or p['estado'] != 'pendiente':
+            raise conflicto('SIN_PAGO_PENDIENTE', 'No hay un pago pendiente para este pedido')
+        if p['metodo'] == 'tarjeta':
+            if Config.TARJETA_MODO != 'simulado':
+                raise prohibido('El simulador solo está disponible en modo simulado')
+            with transaction() as cur:
+                p = R.por_id(cur, p['id'], lock=True)
+                if p['estado'] != 'pendiente':
+                    return {'ok': True, 'idempotente': True}
+                R.marcar_confirmado(cur, p['id'], 'SIM-TC-' + uuid.uuid4().hex[:8])
+                ComprobanteService.emitir(cur, venta_id)
+                ECO.marcar_pagada(cur, venta_id)
+            bus.publish('PagoConfirmado', usuario_id=None, entidad='pago', entidad_id=p['id'], venta_id=venta_id, detalle={'metodo': 'tarjeta'})
+            return {'ok': True, 'pago_id': p['id']}
+        if p['metodo'] == 'paypal' and Config.PAYPAL_MODO != 'simulado':
+            raise prohibido('El simulador solo está disponible en modo simulado')
+        return PagoService.simular_pago({'rol': 'cajero', 'id': 0}, p['referencia'])
+
     @staticmethod
     def iniciar_qr_sistema(venta_id, usuario_id):
         """Usado por E-commerce tras registrar una venta de mostrador con QR."""

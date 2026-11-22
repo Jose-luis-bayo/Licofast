@@ -43,7 +43,7 @@ def _barrido(app):
 def create_app():
     app = Flask(__name__, static_folder=None)
     app.json = Proveedor(app)
-    CORS(app, resources={r'/api/*': {'origins': Config.CORS_ORIGINS}}, allow_headers=['Content-Type', 'Authorization', 'Idempotency-Key', 'X-Firma'])
+    CORS(app, resources={r'/api/*': {'origins': Config.CORS_ORIGINS}}, allow_headers=['Content-Type', 'Authorization', 'Idempotency-Key', 'X-Firma', 'X-Kiosko-Clave', 'X-Kiosko-Acceso'])
 
     from .migraciones import migrar
     try:
@@ -54,7 +54,8 @@ def create_app():
     from .modules.ecommerce.controller import bp as eco
     from .modules.pagos.controller import bp as pag
     from .modules.distribucion.controller import bp as dis
-    for bp in (seg, eco, pag, dis):
+    from .modules.kiosko.controller import bp as kio
+    for bp in (seg, eco, pag, dis, kio):
         app.register_blueprint(bp)
 
     @app.get('/api/v1/health')
@@ -66,7 +67,7 @@ def create_app():
             bd = 'ok'
         except Exception:
             bd = 'error'
-        return jsonify(ok=bd == 'ok', backend='python-flask', version='1.0', base_de_datos=bd, modulos=['seguridad', 'ecommerce', 'pagos', 'distribucion'])
+        return jsonify(ok=bd == 'ok', backend='python-flask', version='1.0', base_de_datos=bd, modulos=['seguridad', 'ecommerce', 'pagos', 'distribucion', 'kiosko'])
 
     @app.errorhandler(AppError)
     def _app_error(e):

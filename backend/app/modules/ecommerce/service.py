@@ -361,7 +361,7 @@ class InventarioService:
 
 class PedidoService:
     @staticmethod
-    def _crear(cur, *, cliente_id, cajero_id, tipo, canal, items, creador_id, entrega=None, estado_inicial=None, cupon=None):
+    def _crear(cur, *, cliente_id, cajero_id, tipo, canal, items, creador_id, entrega=None, estado_inicial=None, cupon=None, extra=None):
         lineas = InventarioService.reservar(cur, items)
         promos = PromocionService.vigentes(cur)
         total, desc, detalle = Decimal('0'), Decimal('0'), []
@@ -380,6 +380,8 @@ class PedidoService:
         datos = dict(usuario_id=cliente_id, cajero_id=cajero_id, tipo_venta=tipo, canal=canal, total=_q(total), descuento=_q(desc), estado='pendiente', estado_pago='pendiente')
         if cup:
             datos['cupon_codigo'] = cup['codigo']
+        if extra:
+            datos.update(extra)
         if entrega:
             datos.update(direccion_entrega=entrega['direccion'], referencia_entrega=entrega['referencia'], telefono_contacto=entrega['telefono'],
                          lat_entrega=entrega['lat'], lng_entrega=entrega['lng'], metodo_pago=entrega['metodo_pago'])
@@ -504,7 +506,7 @@ class PedidoService:
         if r == 'cliente':
             return venta['usuario_id'] == user['id']
         if r == 'empleado':
-            return venta['tipo_venta'] == 'delivery'
+            return venta['tipo_venta'] in ('delivery', 'retiro')
         if r == 'repartidor':
             return venta['tipo_venta'] == 'delivery' and venta['repartidor_id'] == user['id']
         return False
@@ -535,6 +537,78 @@ class PedidoService:
                     'necesito la devolución de mi pago. Adjunto mi QR para que me devuelvan el dinero.' if venta['devolucion_pendiente'] or venta['estado_pago'] == 'pagado'
                     else 'necesito cancelarlo.'))
         return venta
+
+    # ------------------------- Quiosco de autoservicio -------------------------
+    @staticmethod
+    def acceso_kiosko(vid):
+        import hmac, hashlib
+        return hmac.new(Config.JWT_SECRET.encode(), f'kiosko:{vid}'.encode(), hashlib.sha256).hexdigest()[:24]
+
+    @staticmethod
+    def _datos_factura(c):
+        import re
+        c = c if isinstance(c, dict) else {}
+        nombre = v.texto(c, 'nombre', max_len=120)
+        if len(nombre) < 3:
+            raise invalido('Escriba su nombre completo', {'campo': 'nombre'})
+        nit = re.sub(r'\s', '', v.texto(c, 'nit_ci', max_len=25))
+        if not re.fullmatch(r'[0-9A-Za-z\-]{4,20}', nit):
+            raise invalido('El NIT o CI debe tener entre 4 y 20 caracteres (solo letras, números y guion)', {'campo': 'nit_ci'})
+        tel = re.sub(r'\D', '', v.texto(c, 'telefono', max_len=25))
+        if len(tel) == 11 and tel.startswith('591'):
+            tel = tel[3:]
+        if not (len(tel) == 8 and tel[0] in '67'):
+            raise invalido('Escriba un celular boliviano de 8 dígitos (empieza con 6 o 7) para enviarle la factura por WhatsApp', {'campo': 'telefono'})
+        return nombre, nit.upper(), tel
+
+    @staticmethod
+    def crear_kiosko(d):
+        """Pedido del quiosco: sin cuenta, se paga en la pantalla y se retira en bodega."""
+        import secrets
+        if d.get('mayor_edad') is not True:
+            raise invalido('Debe confirmar que es mayor de 18 años para comprar alcohol', codigo='MENOR_DE_EDAD')
+        metodo = d.get('metodo_pago')
+        if metodo not in ('qr', 'tarjeta', 'paypal'):
+            raise invalido('El método de pago debe ser «qr», «tarjeta» o «paypal»', {'campo': 'metodo_pago'})
+        nombre, nit, tel = PedidoService._datos_factura(d.get('cliente'))
+        with transaction() as cur:
+            for _ in range(20):
+                codigo = f'{secrets.randbelow(9000) + 1000}'
+                if not V.codigo_retiro_en_uso(cur, codigo):
+                    break
+            extra = dict(metodo_pago=metodo, factura_nombre=nombre, factura_nit=nit, factura_telefono=tel, telefono_contacto=tel, codigo_retiro=codigo)
+            vid, total, _ = PedidoService._crear(cur, cliente_id=None, cajero_id=None, tipo='retiro', canal='kiosko', items=d.get('items'), creador_id=None, extra=extra)
+        bus.publish('PedidoKiosko', usuario_id=None, entidad='venta', entidad_id=vid, detalle={'total': str(total), 'metodo': metodo})
+        return PedidoService.obtener_kiosko(vid)
+
+    @staticmethod
+    def obtener_kiosko(vid):
+        from ..pagos.facade import PagosFacade
+        PedidoService.cancelar_vencidos()
+        with read() as cur:
+            venta = V.por_id(cur, vid)
+            if not venta or venta['tipo_venta'] != 'retiro':
+                raise no_encontrado('Pedido no encontrado')
+            r = {k: venta[k] for k in ('id', 'total', 'descuento', 'estado', 'estado_pago', 'metodo_pago', 'codigo_retiro', 'created_at')}
+            r = _num(r)
+            r['items'] = [_num(i) for i in V.detalle(cur, vid)]
+            r['pago'] = PagosFacade.ultimo_pago(cur, vid)
+        r['acceso'] = PedidoService.acceso_kiosko(vid)
+        return r
+
+    @staticmethod
+    def cancelar_kiosko(vid):
+        from ..pagos.facade import PagosFacade
+        with transaction() as cur:
+            venta = V.bloquear(cur, vid)
+            if not venta or venta['tipo_venta'] != 'retiro':
+                raise no_encontrado('Pedido no encontrado')
+            if venta['estado'] != 'pendiente' or venta['estado_pago'] != 'pendiente':
+                raise conflicto('NO_CANCELABLE', 'El pedido ya fue pagado o procesado; consulte en bodega')
+            PagosFacade.anular_pagos_de_venta(cur, vid, 'Cancelado en el quiosco')
+            PedidoService.cancelar_venta(cur, vid, 'Cancelado en el quiosco por el cliente', None)
+        bus.publish('PedidoCancelado', usuario_id=None, entidad='venta', entidad_id=vid, detalle={'por': 'quiosco'})
+        return {'mensaje': 'Pedido cancelado'}
 
     @staticmethod
     def _propio_delivery(cur, user, vid):
@@ -613,6 +687,8 @@ class PedidoService:
         if venta['tipo_venta'] == 'mostrador':
             EstadoPedido.validar(venta['estado'], 'pagada', 'mostrador')
             campos['estado'] = 'pagada'
+        elif venta['tipo_venta'] == 'retiro' and venta['estado'] == 'pendiente':
+            campos.update(estado='confirmado', confirmado_en=datetime.datetime.now())    # el quiosco cobra en línea: pasa directo a bodega, sin caja
         V.actualizar(cur, vid, campos)
         return venta
 
@@ -630,14 +706,20 @@ class PedidoService:
     def cancelar_vencidos():
         """Libera el stock de pedidos delivery sin atender pasado el plazo (H-08)."""
         with read() as cur:
-            hay = one(cur, "SELECT 1 AS x FROM ventas WHERE tipo_venta='delivery' AND estado='pendiente' AND estado_pago='pendiente' AND repartidor_id IS NULL "
-                           "AND created_at < DATE_SUB(NOW(), INTERVAL %s MINUTE) LIMIT 1", (Config.PEDIDO_TTL_MIN,))
+            hay = one(cur, "SELECT 1 AS x FROM ventas WHERE estado='pendiente' AND estado_pago='pendiente' AND ("
+                           "(tipo_venta='delivery' AND repartidor_id IS NULL AND created_at < DATE_SUB(NOW(), INTERVAL %s MINUTE)) OR "
+                           "(tipo_venta='retiro' AND created_at < DATE_SUB(NOW(), INTERVAL %s MINUTE))) LIMIT 1", (Config.PEDIDO_TTL_MIN, Config.KIOSKO_TTL_MIN))
         if not hay:
             return 0
+        from ..pagos.facade import PagosFacade
         n = 0
         with transaction() as cur:
             for r in V.delivery_vencidos(cur, Config.PEDIDO_TTL_MIN):
                 PedidoService.cancelar_venta(cur, r['id'], 'Cancelado por falta de atención dentro del plazo', None)
+                n += 1
+            for r in V.retiro_vencidos(cur, Config.KIOSKO_TTL_MIN):
+                PagosFacade.anular_pagos_de_venta(cur, r['id'], 'Pedido de quiosco sin pagar a tiempo')
+                PedidoService.cancelar_venta(cur, r['id'], 'Quiosco: no se pagó a tiempo', None)
                 n += 1
         if n:
             bus.publish('PedidosVencidos', usuario_id=None, entidad='venta', entidad_id=None, detalle={'cancelados': n})

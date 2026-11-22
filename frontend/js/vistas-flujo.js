@@ -7,8 +7,9 @@ LF.pagoTxt = p => `${LF.METODOS[p.metodo_pago] || p.metodo_pago} · ${p.estado_p
 LF.tarjetaPedido = (p, botones = '') => `<div class="card ped">
   <div class="row"><b>Pedido #${p.id}</b>${LF.badgeEstado(p.estado)}<span class="sp"></span><b>${LF.bs(p.total)}</b></div>
   <dl class="kv" style="margin-top:8px">
-    <dt>Cliente</dt><dd>${LF.esc(p.cliente || '—')} · <a href="tel:${LF.esc(p.telefono_contacto)}">${LF.esc(p.telefono_contacto)}</a> <a class="wa-mini" target="_blank" rel="noopener" href="https://wa.me/${LF.telWa(p.telefono_contacto)}">💬</a></dd>
-    <dt>Dirección</dt><dd><b>${LF.esc(p.direccion_entrega)}</b> ${LF.esc(p.referencia_entrega || '')} ${p.lat_entrega != null ? `<a target="_blank" rel="noopener" href="https://www.google.com/maps?q=${p.lat_entrega},${p.lng_entrega}">📍 mapa</a>` : ''}</dd>
+    <dt>Cliente</dt><dd>${LF.esc(p.tipo_venta === 'retiro' ? p.factura_nombre : (p.cliente || '—'))} · <a href="tel:${LF.esc(p.telefono_contacto)}">${LF.esc(p.telefono_contacto)}</a> <a class="wa-mini" target="_blank" rel="noopener" href="https://wa.me/${LF.telWa(p.telefono_contacto)}">💬</a></dd>
+    ${p.tipo_venta === 'retiro' ? `<dt>NIT / CI</dt><dd>${LF.esc(p.factura_nit)}</dd><dt>Entrega</dt><dd><b>🏬 Retiro en bodega</b> (compra en quiosco)</dd>` :
+      `<dt>Dirección</dt><dd><b>${LF.esc(p.direccion_entrega)}</b> ${LF.esc(p.referencia_entrega || '')} ${p.lat_entrega != null ? `<a target="_blank" rel="noopener" href="https://www.google.com/maps?q=${p.lat_entrega},${p.lng_entrega}">📍 mapa</a>` : ''}</dd>`}
     <dt>Pago</dt><dd>${LF.pagoTxt(p)}</dd>
     <dt>Recibido</dt><dd>${LF.fecha(p.created_at)}${p.canal === 'whatsapp' ? ' · 💬 WhatsApp' : ''}</dd>
     ${p.repartidor ? `<dt>Repartidor</dt><dd><b>${LF.esc(p.repartidor)}</b></dd>` : ''}
@@ -39,10 +40,17 @@ LF.acc.enviarRechazo = async el => { const f = LF.form('#frz'); if (!f.motivo) r
 LF.selectorRepartidor = (p, reps) => `<select data-act="asignar" data-id="${p.id}" aria-label="Repartidor" style="min-width:170px;max-width:240px">${LF.opciones(reps.map(r => [r.id, `${r.nombre} (${r.por_salir + r.en_camino} pedidos)`]), p.repartidor_id, 'Sin asignar')}</select>`;
 LF.rutas['/preparar'] = async () => {
   const [lista, reps] = await Promise.all([LF.get('/pedidos/online'), LF.get('/repartidores')]);
-  const prep = lista.filter(p => p.estado === 'confirmado'), listos = lista.filter(p => ['preparado', 'en_camino'].includes(p.estado));
+  const prep = lista.filter(p => p.estado === 'confirmado' && p.tipo_venta !== 'retiro'), listos = lista.filter(p => ['preparado', 'en_camino'].includes(p.estado) && p.tipo_venta !== 'retiro');
+  const kPrep = lista.filter(p => p.tipo_venta === 'retiro' && p.estado === 'confirmado'), kListos = lista.filter(p => p.tipo_venta === 'retiro' && p.estado === 'preparado');
+  const kiosko = `<h2>🏬 Quiosco · por preparar (${kPrep.length})</h2>${kPrep.length ? `<div class="grid g2">${kPrep.map(p => LF.tarjetaPedido(p, `<button class="btn" data-act="prepararPed" data-id="${p.id}">📦 Preparar para retiro</button><button class="btn bad sm" data-act="rechazarPed" data-id="${p.id}">🚫 Cancelar</button>${p.whatsapp_factura_url ? `<a class="btn sec sm" target="_blank" rel="noopener" href="${p.whatsapp_factura_url}">💬 Enviar factura por WhatsApp</a>` : ''}`)).join('')}</div>` : '<div class="card empty">Sin compras del quiosco por preparar</div>'}
+     <h2>🏬 Quiosco · listos para entregar al cliente (${kListos.length})</h2>${kListos.length ? `<div class="grid g2">${kListos.map(p => LF.tarjetaPedido(p, `<input id="cod${p.id}" inputmode="numeric" maxlength="4" placeholder="Código de 4 dígitos" aria-label="Código de retiro" style="max-width:170px"><button class="btn ok" data-act="entregarRetiro" data-id="${p.id}">✅ Entregar al cliente</button><button class="btn bad sm" data-act="rechazarPed" data-id="${p.id}">🚫 Cancelar</button>${p.whatsapp_factura_url ? `<a class="btn sec sm" target="_blank" rel="noopener" href="${p.whatsapp_factura_url}">💬 Factura por WhatsApp</a>` : ''}`)).join('')}</div>` : '<div class="card empty">Ningún pedido del quiosco espera retiro</div>'}`;
   const carga = `<div class="chips">${reps.map(r => `<span class="chip">🛵 ${LF.esc(r.nombre)} · <b>${r.por_salir}</b> por salir · <b>${r.en_camino}</b> en camino</span>`).join('') || '<span class="sub">No hay repartidores activos</span>'}</div>`;
   return LF.pagina('Pedidos a preparar', 'Alista los productos y libere el pedido: el sistema lo asigna al repartidor con menos carga. Solo bodega y administrador pueden cambiar de repartidor.',
-    `${carga}<h2>Por preparar (${prep.length})</h2>${prep.length ? `<div class="grid g2">${prep.map(p => LF.tarjetaPedido(p, `<button class="btn" data-act="prepararPed" data-id="${p.id}">📦 Preparar y liberar</button><button class="btn bad" data-act="rechazarPed" data-id="${p.id}">🚫 Cancelar pedido</button>`)).join('')}</div>` : '<div class="card empty">Nada por preparar por ahora</div>'}
+    `${kiosko}${carga}<h2>Por preparar (${prep.length})</h2>${prep.length ? `<div class="grid g2">${prep.map(p => LF.tarjetaPedido(p, `<button class="btn" data-act="prepararPed" data-id="${p.id}">📦 Preparar y liberar</button><button class="btn bad" data-act="rechazarPed" data-id="${p.id}">🚫 Cancelar pedido</button>`)).join('')}</div>` : '<div class="card empty">Nada por preparar por ahora</div>'}
      <h2>Liberados (${listos.length})</h2>${listos.length ? `<div class="grid g2">${listos.map(p => LF.tarjetaPedido(p, `<label style="margin:0">Cambiar repartidor</label>${LF.selectorRepartidor(p, reps)}${p.estado === 'preparado' ? `<button class="btn bad sm" data-act="rechazarPed" data-id="${p.id}">🚫 Cancelar</button>` : ''}`)).join('')}</div>` : '<div class="card empty">Sin pedidos liberados</div>'}`);
 };
+LF.acc.entregarRetiro = async el => {
+  const codigo = (document.getElementById('cod' + el.dataset.id).value || '').trim();
+  if (!/^\d{4}$/.test(codigo)) return LF.toast('Escriba el código de 4 dígitos del cliente', 'bad');
+  const r = await LF.put('/pedidos/' + el.dataset.id + '/entregar-retiro', { codigo }); LF.toast('✅ ' + r.mensaje, 'ok'); return LF.render(true); };
 LF.acc.prepararPed = async el => { const r = await LF.put('/pedidos/' + el.dataset.id + '/preparar'); LF.toast('📦 ' + r.mensaje, 'ok'); return LF.render(true); };

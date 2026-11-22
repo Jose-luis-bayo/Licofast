@@ -70,6 +70,41 @@ class NotificacionService:
         return WhatsAppClient.enviar(telefono, msg)
 
     @staticmethod
+    def texto_factura(venta, items, numero=None):
+        l = ['🍾 *LicoFast - Comprobante de su compra*', f"Cliente: {venta.get('factura_nombre')}", f"NIT/CI: {venta.get('factura_nit')}",
+             f"Pedido #{venta.get('id')}" + (f" · Comprobante {numero}" if numero else ''), '']
+        for i in items:
+            sub_ = i.get('subtotal')
+            sub_ = float(sub_) if sub_ is not None else float(i.get('precio_unitario', 0)) * i.get('cantidad', 1)
+            l.append(f" • {i.get('cantidad', 1)} × {i.get('nombre', 'Producto')} — Bs {sub_:.2f}")
+        l.append(f"\n💰 *Total: Bs {float(venta.get('total', 0)):.2f}* ({'✅ pagado' if venta.get('estado_pago') == 'pagado' else 'pendiente'})")
+        l.append(f"\n🔑 *Código de retiro: {venta.get('codigo_retiro')}*")
+        l.append('Retire su pedido en bodega presentando este código y su documento (mayores de 18 años). ¡Gracias!')
+        l.append('_Comprobante de venta. No es una factura fiscal (SIN)._')
+        return '\n'.join(l)
+
+    @staticmethod
+    def url_factura(venta, items):
+        tel = WhatsAppClient.normalizar_telefono(venta.get('factura_telefono'))
+        if not tel:
+            return None
+        v_ = dict(venta, codigo_retiro=venta.get('codigo_retiro') or '(ver pantalla del quiosco)')
+        return f'https://wa.me/{tel}?text=' + quote(NotificacionService.texto_factura(v_, items))
+
+    @staticmethod
+    def factura_retiro(venta_id=None, **_):
+        """Al confirmarse el pago de un pedido del quiosco, deja registrado el comprobante enviado por WhatsApp (simulado)."""
+        from ...db import read, one
+        from ..ecommerce.facade import EcommerceFacade as ECO
+        with read() as cur:
+            venta = ECO.venta(cur, venta_id)
+            if not venta or venta['tipo_venta'] != 'retiro':
+                return None
+            items = ECO.detalle(cur, venta_id)
+            comp = one(cur, 'SELECT numero FROM comprobantes WHERE venta_id=%s ORDER BY id DESC LIMIT 1', (venta_id,))
+        return WhatsAppClient.enviar(venta['factura_telefono'], NotificacionService.texto_factura(venta, items, comp['numero'] if comp else None))
+
+    @staticmethod
     def entregado(entidad_id=None, telefono=None, **_):
         return WhatsAppClient.enviar(telefono, f'🍾 LicoFast: Su pedido #{entidad_id} fue entregado con éxito. ¡Gracias por su compra!')
 
@@ -78,6 +113,7 @@ class NotificacionService:
         return WhatsAppClient.enviar(telefono, f'⚠️ LicoFast: No pudimos entregar su pedido #{entidad_id}. Comuníquese con nosotros para reprogramar la entrega.')
 
 
+bus.subscribe('PagoConfirmado', NotificacionService.factura_retiro)
 bus.subscribe('PedidoEnCamino', NotificacionService.en_camino)
 bus.subscribe('PedidoEnDestino', NotificacionService.en_destino)
 bus.subscribe('PedidoEntregado', NotificacionService.entregado)

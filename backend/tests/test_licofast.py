@@ -704,3 +704,108 @@ def test_promo_dias_y_horario_y_validaciones(c, H):
     assert any(x['nombre'] == 'Hoy' and x['dias'] for x in lst)
     assert c.put('/api/v1/promociones/999999/estado', json={'activo': 1}, headers=H['admin_api']).status_code == 404
     assert c.put('/api/v1/promociones/1/estado', json={'activo': 1}, headers=H['cliente1']).status_code == 403
+
+
+# ------------------------------------------------------------------ Quiosco de autoservicio
+CLI = {'nombre': 'María Gómez', 'nit_ci': '1234567', 'telefono': '71234567'}
+
+
+@pytest.fixture()
+def K(monkeypatch):
+    monkeypatch.setattr(Config, 'KIOSKO_CLAVE', 'clave-kiosko-prueba')
+    return {'X-Kiosko-Clave': 'clave-kiosko-prueba'}
+
+
+def kpedido(c, K, pid, cant=1, metodo='qr', **extra):
+    cuerpo = {'items': [{'producto_id': pid, 'cantidad': cant}], 'metodo_pago': metodo, 'cliente': CLI, 'mayor_edad': True}
+    cuerpo.update(extra)
+    return c.post('/api/v1/kiosko/pedidos', json=cuerpo, headers=K)
+
+
+def test_kiosko_desactivado_y_clave(c, monkeypatch):
+    monkeypatch.setattr(Config, 'KIOSKO_CLAVE', '')
+    assert c.post('/api/v1/kiosko/pedidos', json={}).status_code == 503
+    monkeypatch.setattr(Config, 'KIOSKO_CLAVE', 'abc')
+    assert c.post('/api/v1/kiosko/pedidos', json={}, headers={'X-Kiosko-Clave': 'mala'}).status_code == 401
+
+
+def test_kiosko_validaciones(c, H, K):
+    pid = nuevo_producto(c, H, 20, 10)
+    assert kpedido(c, K, pid, mayor_edad=False).status_code == 422
+    assert kpedido(c, K, pid, metodo='efectivo').status_code == 422
+    assert kpedido(c, K, pid, cliente={**CLI, 'telefono': '123'}).status_code == 422
+    assert kpedido(c, K, pid, cliente={**CLI, 'nombre': ''}).status_code == 422
+    assert kpedido(c, K, pid, cliente={**CLI, 'nit_ci': '1'}).status_code == 422
+    assert kpedido(c, K, pid, cant=999).status_code in (409, 422)
+
+
+@pytest.mark.parametrize('metodo', ['qr', 'tarjeta', 'paypal'])
+def test_kiosko_flujo_completo(c, H, K, metodo):
+    pid = nuevo_producto(c, H, 20, 10)
+    r = kpedido(c, K, pid, 2, metodo)
+    assert r.status_code == 201, r.get_json()
+    p = r.get_json(); vid = p['id']
+    assert p['estado'] == 'pendiente' and p['estado_pago'] == 'pendiente' and len(p['codigo_retiro']) == 4
+    A = {**K, 'X-Kiosko-Acceso': p['acceso']}
+    assert c.get(f'/api/v1/kiosko/pedidos/{vid}', headers=K).status_code == 404                 # sin token de acceso
+    pago = c.post(f'/api/v1/kiosko/pedidos/{vid}/pago', json={'metodo': metodo}, headers=A)
+    assert pago.status_code == 201 and pago.get_json()['simulable'] is True
+    if metodo != 'tarjeta':
+        assert pago.get_json()['pago']['qr_payload']
+    # todavía no llega a bodega
+    assert vid not in [x['id'] for x in c.get('/api/v1/pedidos/online', headers=H['bodega1']).get_json()]
+    assert c.post(f'/api/v1/kiosko/pedidos/{vid}/simular', headers=A).status_code == 200
+    d = c.get(f'/api/v1/kiosko/pedidos/{vid}', headers=A).get_json()
+    assert d['estado'] == 'confirmado' and d['estado_pago'] == 'pagado'                         # pagado → pasa solo a bodega
+    cola = c.get('/api/v1/pedidos/online', headers=H['bodega1']).get_json()
+    fila = next(x for x in cola if x['id'] == vid)
+    assert fila['tipo_venta'] == 'retiro' and 'codigo_retiro' not in fila and fila['whatsapp_factura_url'].startswith('https://wa.me/59171234567')
+    assert vid not in [x['id'] for x in c.get('/api/v1/pedidos/online', headers=H['cajero1']).get_json()]   # caja no lo ve
+    assert c.put(f'/api/v1/pedidos/{vid}/entregar-retiro', json={'codigo': p['codigo_retiro']}, headers=H['bodega1']).status_code == 409   # aún no preparado
+    assert c.put(f'/api/v1/pedidos/{vid}/preparar', headers=H['bodega1']).status_code == 200
+    mal = c.put(f'/api/v1/pedidos/{vid}/entregar-retiro', json={'codigo': '0000' if p['codigo_retiro'] != '0000' else '1111'}, headers=H['bodega1'])
+    assert mal.status_code == 422 and mal.get_json()['error']['codigo'] == 'CODIGO_INCORRECTO'
+    ok = c.put(f'/api/v1/pedidos/{vid}/entregar-retiro', json={'codigo': p['codigo_retiro']}, headers=H['bodega1'])
+    assert ok.status_code == 200 and ok.get_json()['estado'] == 'entregada'
+    assert sql('SELECT estado, repartidor_id FROM ventas WHERE id=%s', (vid,))[0] == {'estado': 'entregada', 'repartidor_id': None}
+    assert c.put(f'/api/v1/pedidos/{vid}/entregar-retiro', json={'codigo': p['codigo_retiro']}, headers=H['bodega1']).status_code == 409
+
+
+def test_kiosko_cancelar_sin_pagar_repone_stock(c, H, K):
+    pid = nuevo_producto(c, H, 20, 10)
+    p = kpedido(c, K, pid, 3).get_json(); A = {**K, 'X-Kiosko-Acceso': p['acceso']}
+    assert sql('SELECT stock FROM productos WHERE id=%s', (pid,))[0]['stock'] == 17
+    assert c.post(f"/api/v1/kiosko/pedidos/{p['id']}/pago", json={'metodo': 'qr'}, headers=A).status_code == 201
+    assert c.post(f"/api/v1/kiosko/pedidos/{p['id']}/cancelar", headers=A).status_code == 200
+    assert sql('SELECT stock FROM productos WHERE id=%s', (pid,))[0]['stock'] == 20
+    assert c.post(f"/api/v1/kiosko/pedidos/{p['id']}/simular", headers=A).status_code == 409
+
+
+def test_kiosko_no_cancela_pagado_y_bodega_puede_rechazar(c, H, K):
+    pid = nuevo_producto(c, H, 20, 10)
+    p = kpedido(c, K, pid, 1, 'tarjeta').get_json(); A = {**K, 'X-Kiosko-Acceso': p['acceso']}
+    c.post(f"/api/v1/kiosko/pedidos/{p['id']}/pago", json={'metodo': 'tarjeta'}, headers=A)
+    c.post(f"/api/v1/kiosko/pedidos/{p['id']}/simular", headers=A)
+    assert c.post(f"/api/v1/kiosko/pedidos/{p['id']}/cancelar", headers=A).status_code == 409
+    assert c.put(f"/api/v1/pedidos/{p['id']}/rechazar", json={'motivo': 'Sin stock real'}, headers=H['cajero1']).status_code == 403
+    r = c.put(f"/api/v1/pedidos/{p['id']}/rechazar", json={'motivo': 'Sin stock real'}, headers=H['bodega1'])
+    assert r.status_code == 200 and r.get_json().get('requiere_reembolso') is True
+    assert sql('SELECT stock FROM productos WHERE id=%s', (pid,))[0]['stock'] == 20
+
+
+def test_kiosko_tarjeta_real_no_disponible(c, H, K, monkeypatch):
+    monkeypatch.setattr(Config, 'TARJETA_MODO', 'real')
+    pid = nuevo_producto(c, H, 20, 10)
+    p = kpedido(c, K, pid, 1, 'tarjeta').get_json(); A = {**K, 'X-Kiosko-Acceso': p['acceso']}
+    r = c.post(f"/api/v1/kiosko/pedidos/{p['id']}/pago", json={'metodo': 'tarjeta'}, headers=A)
+    assert r.status_code == 503 and r.get_json()['error']['codigo'] == 'TARJETA_NO_DISPONIBLE'
+
+
+def test_kiosko_pedido_sin_pagar_vence(c, H, K, monkeypatch):
+    monkeypatch.setattr(Config, 'KIOSKO_TTL_MIN', 0)
+    pid = nuevo_producto(c, H, 20, 10)
+    p = kpedido(c, K, pid, 2).get_json(); A = {**K, 'X-Kiosko-Acceso': p['acceso']}
+    sql("UPDATE ventas SET created_at = DATE_SUB(NOW(), INTERVAL 5 MINUTE) WHERE id=%s", (p['id'],))
+    d = c.get(f"/api/v1/kiosko/pedidos/{p['id']}", headers=A).get_json()
+    assert d['estado'] == 'no_entregado'
+    assert sql('SELECT stock FROM productos WHERE id=%s', (pid,))[0]['stock'] == 20

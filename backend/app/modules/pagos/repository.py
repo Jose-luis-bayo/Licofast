@@ -17,6 +17,10 @@ class PagoRepository:
         return run(cur, "INSERT INTO pagos(venta_id,metodo,monto,estado,referencia,qr_payload) VALUES(%s,'paypal',%s,'pendiente',%s,%s)", (venta_id, monto, orden_id, approve_url))
 
     @staticmethod
+    def insertar_tarjeta(cur, venta_id, monto, referencia):
+        return run(cur, "INSERT INTO pagos(venta_id,metodo,monto,estado,referencia) VALUES(%s,'tarjeta',%s,'pendiente',%s)", (venta_id, monto, referencia))
+
+    @staticmethod
     def por_id(cur, pid, lock=False): return one(cur, 'SELECT * FROM pagos WHERE id=%s' + (' FOR UPDATE' if lock else ''), (pid,))
 
     @staticmethod

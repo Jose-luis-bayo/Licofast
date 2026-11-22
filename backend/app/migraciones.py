@@ -64,9 +64,17 @@ def migrar():
         t = _tipo(cur, 'ventas', 'estado')
         if 'preparado' not in t:
             run(cur, "ALTER TABLE ventas MODIFY COLUMN estado ENUM('pendiente','pagada','en_camino','entregada','no_entregado','confirmado','preparado') NOT NULL DEFAULT 'pendiente'")
+        # --- quiosco de autoservicio: pedidos de retiro en bodega, datos para la factura y pago con tarjeta
+        if 'retiro' not in _tipo(cur, 'ventas', 'tipo_venta'):
+            run(cur, "ALTER TABLE ventas MODIFY COLUMN tipo_venta ENUM('mostrador','delivery','retiro') NOT NULL DEFAULT 'delivery'")
+        if 'kiosko' not in _tipo(cur, 'ventas', 'canal'):
+            run(cur, "ALTER TABLE ventas MODIFY COLUMN canal ENUM('web','mostrador','whatsapp','kiosko') NOT NULL DEFAULT 'web'")
+        for col, ddl in (('factura_nombre', 'VARCHAR(120) NULL'), ('factura_nit', 'VARCHAR(20) NULL'), ('factura_telefono', 'VARCHAR(20) NULL'), ('codigo_retiro', 'VARCHAR(6) NULL')):
+            if not _columna(cur, 'ventas', col):
+                run(cur, f'ALTER TABLE ventas ADD COLUMN {col} {ddl}')
         # --- pagos: nuevo método PayPal
-        if 'paypal' not in _tipo(cur, 'pagos', 'metodo'):
-            run(cur, "ALTER TABLE pagos MODIFY COLUMN metodo ENUM('efectivo','qr','paypal') NOT NULL")
+        if 'tarjeta' not in _tipo(cur, 'pagos', 'metodo'):
+            run(cur, "ALTER TABLE pagos MODIFY COLUMN metodo ENUM('efectivo','qr','paypal','tarjeta') NOT NULL")
         # --- promociones avanzadas (2x1, segunda unidad, por cantidad, al total del pedido, días y horario)
         if 'llevapaga' not in _tipo(cur, 'promociones', 'tipo'):
             run(cur, "ALTER TABLE promociones MODIFY COLUMN tipo ENUM('porcentaje','monto','llevapaga','segunda','pedido_pct','pedido_monto') NOT NULL")

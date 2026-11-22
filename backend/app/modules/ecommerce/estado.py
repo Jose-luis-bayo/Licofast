@@ -12,7 +12,7 @@ class EstadoPedido:
     TRANSICIONES = {
         'pendiente': {'confirmado', 'pagada', 'no_entregado'},
         'confirmado': {'preparado', 'no_entregado'},
-        'preparado': {'en_camino', 'no_entregado'},
+        'preparado': {'en_camino', 'entregada', 'no_entregado'},     # «entregada» directo solo para retiro en bodega
         'en_camino': {'entregada', 'no_entregado'},
         'pagada': set(), 'entregada': set(), 'no_entregado': set(),
     }
@@ -25,6 +25,8 @@ class EstadoPedido:
     def validar(cls, actual, nuevo, tipo_venta='delivery'):
         if nuevo == 'pagada' and tipo_venta != 'mostrador':
             raise conflicto('TRANSICION_INVALIDA', 'Solo una venta de mostrador pasa a «pagada»')
+        if actual == 'preparado' and nuevo == 'entregada' and tipo_venta != 'retiro':
+            raise conflicto('ETAPA_INVALIDA', 'Un pedido a domicilio debe salir primero «en camino»', {'estado_actual': actual, 'estado_pedido': nuevo})
         if nuevo not in cls.TRANSICIONES.get(actual, set()):
             if actual in ('entregada', 'no_entregado', 'pagada'):
                 raise conflicto('PEDIDO_YA_PROCESADO', 'El pedido ya fue procesado', {'estado_actual': actual, 'estado_pedido': nuevo})

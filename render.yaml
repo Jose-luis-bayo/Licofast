@@ -39,3 +39,7 @@ services:
         sync: false
       - key: PAYPAL_TASA_BOB
         value: "6.96"
+      - key: KIOSKO_CLAVE
+        sync: false
+      - key: TARJETA_MODO
+        value: simulado

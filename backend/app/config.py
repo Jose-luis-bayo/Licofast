@@ -51,6 +51,9 @@ class Config:
     WHATSAPP_NEGOCIO = env('WHATSAPP_NEGOCIO', '59161885077')   # número del cajero/negocio (devoluciones y cancelaciones)
     PUBLIC_URL = env('PUBLIC_URL', '')   # p. ej. https://licofast-phvl.onrender.com (para el retorno de PayPal)
     PEDIDO_TTL_MIN = int(env('PEDIDO_TTL_MIN', '360'))
+    KIOSKO_CLAVE = env('KIOSKO_CLAVE', '')            # clave compartida con la app del quiosco; vacía = quiosco desactivado
+    KIOSKO_TTL_MIN = int(env('KIOSKO_TTL_MIN', '15'))  # un pedido de quiosco sin pagar se libera pasado este tiempo
+    TARJETA_MODO = env('TARJETA_MODO', 'simulado')    # simulado | (real: requiere integrar el terminal/procesador de tarjetas)
     MYSQLDUMP_PATH = env('MYSQLDUMP_PATH', 'mysqldump')
     DEBUG = env('FLASK_DEBUG', '0') == '1'
     PORT = int(env('PORT', '5000'))
