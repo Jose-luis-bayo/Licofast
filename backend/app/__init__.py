@@ -1,5 +1,6 @@
 """LicoFast: servicio web REST (monolito modular, 4 módulos, 5 capas). Ver SDD secciones 7 y 8."""
 import logging
+import os
 import threading
 import time
 import uuid
@@ -96,6 +97,13 @@ def create_app():
     @app.get('/')
     def index():
         return send_from_directory(Config.FRONTEND_DIR, 'index.html')
+
+    @app.get('/descargas/<path:nombre>')
+    def descargas(nombre):
+        """Archivos para descargar (la app Android). Se fuerza la descarga y el tipo correcto de APK."""
+        carpeta = os.path.join(str(Config.FRONTEND_DIR), 'descargas')
+        mime = 'application/vnd.android.package-archive' if nombre.endswith('.apk') else None
+        return send_from_directory(carpeta, nombre, as_attachment=True, mimetype=mime)
 
     @app.get('/<path:ruta>')
     def estaticos(ruta):

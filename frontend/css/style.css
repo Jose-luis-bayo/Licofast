@@ -225,3 +225,20 @@ main.wrap{overflow-x:hidden}
 input,select,textarea{max-width:100%;font-size:16px}
 @media(hover:none){.btn:hover{box-shadow:none}}
 .pin-in span{display:block;transform:rotate(45deg)}
+
+/* Botón emergente «Descarga la app» (inicio) */
+.app-flotante{position:fixed;left:18px;bottom:18px;z-index:30;display:flex;align-items:center;gap:10px;border:0;cursor:pointer;color:#fff;padding:8px 16px 8px 8px;border-radius:40px;background:linear-gradient(135deg,var(--azul-1),var(--brand));box-shadow:0 8px 24px #0b1f4b66;font-family:inherit;animation:af-entra .6s .9s both cubic-bezier(.2,1.4,.4,1),af-pulso 2.6s 2.5s infinite}
+.app-flotante[hidden]{display:none}
+.app-flotante:hover{transform:translateY(-2px)}
+.af-logo{width:44px;height:44px;border-radius:50%;background:#fff;display:grid;place-items:center;font-size:25px}
+.af-txt{display:flex;flex-direction:column;align-items:flex-start;line-height:1.15;text-align:left}
+.af-txt small{font-size:11px;color:var(--azul-4);letter-spacing:.3px}.af-txt b{font-size:17px}.af-txt i{font-style:normal;color:var(--azul-4)}
+.af-flecha{font-size:18px;opacity:.9}
+@keyframes af-entra{from{transform:translateY(90px) scale(.8);opacity:0}to{transform:none;opacity:1}}
+@keyframes af-pulso{0%,100%{box-shadow:0 8px 24px #0b1f4b66}50%{box-shadow:0 8px 24px #0b1f4b66,0 0 0 9px #3b82f633}}
+@media(max-width:560px){.app-flotante{left:12px;bottom:14px;padding:6px 12px 6px 6px}.af-logo{width:38px;height:38px;font-size:21px}.af-txt b{font-size:15px}.af-flecha{display:none}}
+@media print{.app-flotante{display:none!important}}
+.dl-app{text-align:center}.dl-app .dl-logo{font-size:44px;line-height:1}.dl-app h2{margin:4px 0 2px}
+.dl-app .qrbox{display:inline-block;background:#fff;border:2px solid var(--line);border-radius:16px;padding:10px;margin:12px 0 6px;width:236px;max-width:100%}
+.dl-app ol{text-align:left;margin:14px auto 6px;max-width:420px;padding-left:22px;color:var(--ink)}.dl-app ol li{margin:5px 0}
+.dl-app .row{justify-content:center}

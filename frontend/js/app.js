@@ -39,6 +39,7 @@ LF.render = async (silencioso) => {
   if (ruta !== '/entregas') LF.gpsSincronizar && LF.gpsSincronizar([]);
   const ms = LF.refresco && LF.refresco[ruta];
   if (ms) LF._auto = setTimeout(() => { if (document.hidden || !LF.$('#modal').hidden || document.activeElement && document.activeElement.tagName === 'SELECT') return LF.render(true); LF.render(true); }, ms);
+  const btnApp = LF.$('#appFlot'); if (btnApp) btnApp.hidden = !(ruta === '/' && (!LF.user || LF.user.rol === 'cliente'));
   const permitidos = PERMITIDAS[ruta];
   if (permitidos && (!LF.user || !permitidos.includes(LF.user.rol))) { location.hash = LF.user ? LF.inicio() : '#/login'; return; }
   const vista = LF.rutas[ruta] || LF.rutas['/'];

@@ -1,0 +1,2 @@
+Coloque aqui la app Android con el nombre exacto: licofast.apk
+(La web la ofrece en el boton "Descarga la app" y en su codigo QR.)

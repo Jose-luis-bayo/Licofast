@@ -824,3 +824,15 @@ def test_kiosko_comprobante_pdf(c, H, K):
     r = c.get(ruta)
     assert r.status_code == 200 and r.mimetype == 'application/pdf' and r.data.startswith(b'%PDF') and p['codigo_retiro'].encode() in r.data
     assert c.get(f"/api/v1/kiosko/comprobante/{p['id']}/{'0' * 24}").status_code == 404           # token falso
+
+
+def test_descarga_de_la_app(c, monkeypatch, tmp_path):
+    (tmp_path / 'descargas').mkdir()
+    (tmp_path / 'descargas' / 'licofast.apk').write_bytes(b'PK\x03\x04apk-de-prueba')
+    monkeypatch.setattr(Config, 'FRONTEND_DIR', str(tmp_path))
+    r = c.get('/descargas/licofast.apk')
+    assert r.status_code == 200 and r.mimetype == 'application/vnd.android.package-archive'
+    assert 'attachment' in r.headers['Content-Disposition'] and r.data.startswith(b'PK')
+    assert c.head('/descargas/licofast.apk').status_code == 200
+    assert c.get('/descargas/no-existe.apk').status_code == 404
+    assert c.get('/descargas/../config.js').status_code == 404                                   # no sale de la carpeta

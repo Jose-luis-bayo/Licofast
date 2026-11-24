@@ -12,3 +12,7 @@
     window.LF_API_BASE = window.location.protocol + '//' + host + ':5000';
   }
 })();
+
+// Dirección de descarga de la app Android (APK). Por defecto la sirve este mismo servidor desde frontend/descargas/licofast.apk.
+// Si prefiere alojarla en otro lado (p. ej. GitHub Releases), ponga aquí el enlace completo.
+window.LF_APP_URL = window.LF_APP_URL || 'descargas/licofast.apk';
